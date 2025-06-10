@@ -525,19 +525,86 @@ def parametric_study(base_config_file, parameter_name, parameter_values, output_
     return results
 
 
-def main():
-    """Main function to run coilgun simulation from command line"""
-    if len(sys.argv) < 2:
-        print("Usage: python solve.py <config_file.json>")
-        print("Example: python solve.py my_coilgun_config.json")
-        sys.exit(1)
+def find_config_files():
+    """Find all JSON configuration files in the project directory"""
+    current_dir = Path(".")
+    json_files = list(current_dir.glob("*.json"))
     
-    config_file = sys.argv[1]
+    # Filter to likely config files by checking content
+    config_files = []
+    for json_file in json_files:
+        try:
+            with open(json_file, 'r') as f:
+                data = json.load(f)
+                # Check if it looks like a coilgun config file
+                if any(key in data for key in ['coil', 'capacitor', 'projectile', 'simulation']):
+                    config_files.append(json_file)
+        except (json.JSONDecodeError, IOError):
+            # Skip files that can't be read or aren't valid JSON
+            continue
     
-    if not os.path.exists(config_file):
-        print(f"Error: Configuration file '{config_file}' not found.")
+    return sorted(config_files)
+
+def select_config_file():
+    """Interactive selection of configuration file"""
+    # Check if config file was provided as command line argument
+    if len(sys.argv) >= 2:
+        config_file = sys.argv[1]
+        if os.path.exists(config_file):
+            return config_file
+        else:
+            print(f"Warning: Specified config file '{config_file}' not found.")
+            print("Searching for available config files...\n")
+    
+    # Find available config files
+    config_files = find_config_files()
+    
+    if not config_files:
+        print("No coilgun configuration files found in the current directory.")
         print("Please run 'python setup.py' first to create a configuration file.")
         sys.exit(1)
+    
+    # Present options to user
+    print("Available coilgun configuration files:")
+    print("-" * 40)
+    for i, config_file in enumerate(config_files, 1):
+        # Try to read description from config file
+        try:
+            with open(config_file, 'r') as f:
+                data = json.load(f)
+                description = data.get('description', 'No description available')
+            print(f"{i}. {config_file.name}")
+            print(f"   Description: {description}")
+        except:
+            print(f"{i}. {config_file.name}")
+        print()
+    
+    # Get user selection
+    while True:
+        try:
+            choice = input(f"Select configuration file (1-{len(config_files)}) or 'q' to quit: ").strip()
+            
+            if choice.lower() == 'q':
+                print("Exiting...")
+                sys.exit(0)
+            
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(config_files):
+                selected_file = config_files[choice_num - 1]
+                print(f"Selected: {selected_file.name}\n")
+                return str(selected_file)
+            else:
+                print(f"Please enter a number between 1 and {len(config_files)}")
+        except ValueError:
+            print("Please enter a valid number or 'q' to quit")
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            sys.exit(0)
+
+def main():
+    """Main function to run coilgun simulation from command line"""
+    
+    config_file = select_config_file()
     
     print("=" * 60)
     print("COILGUN SIMULATION SOLVER")

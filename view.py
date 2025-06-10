@@ -21,6 +21,7 @@ from matplotlib.colors import LogNorm
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D
 from pathlib import Path
+import json
 
 from equations import CoilgunPhysicsEngine
 from solve import CoilgunSimulation
@@ -584,44 +585,219 @@ def create_field_visualization_suite(config_file, output_dir="field_visualizatio
     return visualizer, sim, results
 
 
-def main():
-    """Main function to create visualizations from command line"""
+def find_results_directories():
+    """Find all results directories in the project directory"""
+    current_dir = Path(".")
+    result_dirs = []
+    
+    for item in current_dir.iterdir():
+        if item.is_dir():
+            # Check if it's a results directory by looking for expected files
+            config_file = item / "simulation_config.json"
+            summary_file = item / "simulation_summary.json"
+            
+            if config_file.exists() and summary_file.exists():
+                result_dirs.append(item)
+    
+    return sorted(result_dirs)
+
+def select_results_directory():
+    """Interactive selection of results directory"""
     import sys
     
-    if len(sys.argv) < 2:
-        print("Usage: python view.py <config_file.json>")
-        print("Example: python view.py my_coilgun_config.json")
+    # Check if results directory was provided as command line argument
+    if len(sys.argv) >= 2:
+        results_dir = sys.argv[1]
+        if Path(results_dir).exists():
+            # Check if it's a valid results directory
+            config_file = Path(results_dir) / "simulation_config.json"
+            if config_file.exists():
+                return results_dir
+            else:
+                print(f"Warning: '{results_dir}' doesn't appear to be a results directory.")
+                print("Searching for available results directories...\n")
+        else:
+            print(f"Warning: Specified directory '{results_dir}' not found.")
+            print("Searching for available results directories...\n")
+    
+    # Find available results directories
+    result_dirs = find_results_directories()
+    
+    if not result_dirs:
+        print("No simulation results directories found in the current directory.")
+        print("Please run a simulation with 'python solve.py' first to generate results.")
         sys.exit(1)
     
-    config_file = sys.argv[1]
+    # Present options to user
+    print("Available simulation results directories:")
+    print("-" * 50)
+    for i, results_dir in enumerate(result_dirs, 1):
+        # Try to read summary from results directory
+        try:
+            summary_file = results_dir / "simulation_summary.json"
+            with open(summary_file, 'r') as f:
+                data = json.load(f)
+                summary = data.get('summary', {})
+                final_velocity = summary.get('final_velocity_ms', 'N/A')
+                efficiency = summary.get('efficiency_percent', 'N/A')
+                exit_reason = data.get('simulation_info', {}).get('exit_reason', 'N/A')
+            
+            print(f"{i}. {results_dir.name}")
+            print(f"   Final velocity: {final_velocity} m/s")
+            print(f"   Efficiency: {efficiency}%")
+            print(f"   Exit reason: {exit_reason}")
+        except:
+            print(f"{i}. {results_dir.name}")
+            print(f"   (Unable to read summary)")
+        print()
     
-    if not os.path.exists(config_file):
-        print(f"Error: Configuration file '{config_file}' not found.")
-        print("Please run 'python setup.py' first to create a configuration file.")
-        sys.exit(1)
+    # Get user selection
+    while True:
+        try:
+            choice = input(f"Select results directory (1-{len(result_dirs)}) or 'q' to quit: ").strip()
+            
+            if choice.lower() == 'q':
+                print("Exiting...")
+                sys.exit(0)
+            
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(result_dirs):
+                selected_dir = result_dirs[choice_num - 1]
+                print(f"Selected: {selected_dir.name}\n")
+                return str(selected_dir)
+            else:
+                print(f"Please enter a number between 1 and {len(result_dirs)}")
+        except ValueError:
+            print("Please enter a valid number or 'q' to quit")
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            sys.exit(0)
+
+def load_simulation_from_results(results_dir):
+    """
+    Load simulation data from a results directory.
+    
+    Args:
+        results_dir: Path to results directory
+        
+    Returns:
+        tuple: (config_file_path, time_series_data, summary_data)
+    """
+    results_path = Path(results_dir)
+    
+    # Load configuration
+    config_file = results_path / "simulation_config.json"
+    if not config_file.exists():
+        raise FileNotFoundError(f"Configuration file not found in {results_dir}")
+    
+    # Load summary
+    summary_file = results_path / "simulation_summary.json"
+    with open(summary_file, 'r') as f:
+        summary_data = json.load(f)
+    
+    # Load time series data
+    time_series_data = None
+    npz_file = results_path / "time_series_data.npz"
+    csv_file = results_path / "time_series_data.csv"
+    
+    if npz_file.exists():
+        # Load from compressed numpy file
+        with np.load(npz_file) as data:
+            time_series_data = {key: data[key] for key in data.files}
+    elif csv_file.exists():
+        # Load from CSV file
+        try:
+            import pandas as pd
+            df = pd.read_csv(csv_file)
+            time_series_data = {col: df[col].values for col in df.columns}
+        except ImportError:
+            # Fallback CSV reading without pandas
+            import csv
+            time_series_data = {}
+            with open(csv_file, 'r') as f:
+                reader = csv.DictReader(f)
+                data_lists = {fieldname: [] for fieldname in reader.fieldnames}
+                for row in reader:
+                    for key, value in row.items():
+                        data_lists[key].append(float(value))
+                time_series_data = {key: np.array(values) for key, values in data_lists.items()}
+    
+    return str(config_file), time_series_data, summary_data
+
+def main():
+    """Main function to create visualizations from results directory"""
+    import sys
+    import json
+    
+    results_dir = select_results_directory()
     
     print("=" * 60)
     print("COILGUN VISUALIZATION SUITE")
     print("=" * 60)
-    print(f"Configuration file: {config_file}")
+    print(f"Results directory: {results_dir}")
     
     try:
-        # Create output directory based on config filename
-        config_name = Path(config_file).stem
-        output_dir = f"visualizations_{config_name}"
+        # Load simulation data from results directory
+        print("Loading simulation data...")
+        config_file, time_series_data, summary_data = load_simulation_from_results(results_dir)
         
-        # Create complete visualization suite
-        print(f"Creating visualizations in: {output_dir}/")
-        visualizer, sim, results = create_field_visualization_suite(config_file, output_dir)
+        # Create output directory based on results directory name
+        results_name = Path(results_dir).name
+        output_dir = f"visualizations_{results_name}"
+        
+        # Print simulation summary
+        summary = summary_data.get('summary', {})
+        print(f"Final velocity: {summary.get('final_velocity_ms', 'N/A')} m/s")
+        print(f"Efficiency: {summary.get('efficiency_percent', 'N/A')}%")
+        print(f"Max current: {summary.get('max_current_A', 'N/A')} A")
+        
+        if time_series_data is not None:
+            print("Creating visualizations with time series data...")
+            
+            # Create simulation object to use existing plotting methods
+            sim = CoilgunSimulation(config_file)
+            
+            # Map CSV column names to expected result keys
+            csv_to_result_mapping = {
+                'time_s': 'time',
+                'charge_C': 'charge', 
+                'current_A': 'current',
+                'position_m': 'position',
+                'velocity_ms': 'velocity',
+                'force_N': 'force',
+                'inductance_H': 'inductance',
+                'power_W': 'power',
+                'energy_capacitor_J': 'energy_capacitor',
+                'energy_kinetic_J': 'energy_kinetic'
+            }
+            
+            # Populate results with loaded data
+            for csv_key, result_key in csv_to_result_mapping.items():
+                if csv_key in time_series_data:
+                    sim.results[result_key] = time_series_data[csv_key]
+            
+            # Create detailed plots using existing methods
+            print(f"Creating detailed plots in: {output_dir}/")
+            sim.plot_results(save_plots=True, output_dir=output_dir)
+            
+            # Create field visualization suite
+            print("Creating magnetic field visualizations...")
+            visualizer, _, _ = create_field_visualization_suite(config_file, output_dir)
+            
+        else:
+            print("No time series data available. Creating basic field visualizations...")
+            # Create field visualization suite without animation
+            visualizer, _, _ = create_field_visualization_suite(config_file, output_dir)
         
         print("\n" + "="*50)
         print("VISUALIZATION COMPLETE")
         print("="*50)
         print(f"Files saved to: {output_dir}/")
+        print("- Simulation result plots (if time series data available)")
         print("- Magnetic field contour plots")
         print("- 3D field surface plots") 
         print("- On-axis field profiles")
-        print("- Field evolution animation")
+        print("- Field evolution animation (if time series data available)")
         print("\nCheck the output directory for all visualization files!")
         
     except Exception as e:

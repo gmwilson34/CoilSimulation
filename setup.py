@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Coilgun Simulation Setup Script
 
