@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Advanced Magnetic Field Visualization for Coilgun Simulation
 
@@ -8,20 +7,25 @@ and dynamic simulation results using the physics equations from the main engine.
 Features:
 - 2D magnetic field contour plots
 - 3D field surface plots
-- Field line visualization
+- 3D field line visualization
+- 3D coil geometry and projectile rendering
 - Force and inductance mapping
 - Animation of field evolution during simulation
-- Interactive field exploration
+- Interactive 3D field exploration
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, Normalize
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from pathlib import Path
 import json
+import sys
+from scipy.integrate import odeint
+from scipy.interpolate import griddata
 
 from equations import CoilgunPhysicsEngine
 from solve import CoilgunSimulation
@@ -125,6 +129,96 @@ class CoilgunFieldVisualizer:
             'r_range': r_range
         }
     
+    def calculate_bfield_3d(self, current, z_range=None, x_range=None, y_range=None,
+                           num_z=50, num_x=30, num_y=30):
+        """
+        Calculate 3D magnetic field by rotating 2D axisymmetric solution.
+        
+        Args:
+            current: Current in the coil (A)
+            z_range: [z_min, z_max] axial range (m)
+            x_range: [x_min, x_max] range (m)
+            y_range: [y_min, y_max] range (m)
+            num_z, num_x, num_y: Grid discretization
+            
+        Returns:
+            dict: 3D field data
+        """
+        # Set default ranges
+        if z_range is None:
+            z_range = [-self.physics.coil_length * 0.5, self.physics.coil_length * 1.5]
+        if x_range is None:
+            max_r = 2 * self.physics.coil_outer_radius
+            x_range = [-max_r, max_r]
+        if y_range is None:
+            max_r = 2 * self.physics.coil_outer_radius
+            y_range = [-max_r, max_r]
+        
+        # Create 3D coordinate grids
+        z_points = np.linspace(z_range[0], z_range[1], num_z)
+        x_points = np.linspace(x_range[0], x_range[1], num_x)
+        y_points = np.linspace(y_range[0], y_range[1], num_y)
+        
+        Z, X, Y = np.meshgrid(z_points, x_points, y_points, indexing='ij')
+        
+        # Convert Cartesian to cylindrical coordinates
+        R = np.sqrt(X**2 + Y**2)
+        Phi = np.arctan2(Y, X)
+        
+        # Initialize 3D field arrays
+        Bx = np.zeros_like(Z)
+        By = np.zeros_like(Z)
+        Bz = np.zeros_like(Z)
+        
+        print(f"Calculating 3D B-field on {num_z}×{num_x}×{num_y} grid...")
+        
+        # Calculate 2D field components for each point
+        for i in range(num_z):
+            for j in range(num_x):
+                for k in range(num_y):
+                    z = Z[i, j, k]
+                    r = R[i, j, k]
+                    phi = Phi[i, j, k]
+                    
+                    if r < 1e-12:  # On axis
+                        bz_cyl = self.physics.magnetic_field_solenoid_on_axis(z, current)
+                        br_cyl = 0
+                    else:
+                        # Calculate field using 2D solution
+                        bz_cyl, br_cyl = self._biot_savart_total_field(z, r, current)
+                    
+                    # Convert cylindrical field components to Cartesian
+                    Bz[i, j, k] = bz_cyl
+                    Bx[i, j, k] = br_cyl * np.cos(phi)
+                    By[i, j, k] = br_cyl * np.sin(phi)
+        
+        print("3D B-field calculation complete.")
+        
+        return {
+            'X': X, 'Y': Y, 'Z': Z,
+            'Bx': Bx, 'By': By, 'Bz': Bz,
+            'B_magnitude': np.sqrt(Bx**2 + By**2 + Bz**2),
+            'current': current
+        }
+    
+    def _biot_savart_total_field(self, z, r, current):
+        """Calculate total field at (z,r) using superposition of current loops."""
+        num_loops = max(50, int(self.physics.total_turns / 5))
+        loop_positions = np.linspace(0, self.physics.coil_length, num_loops)
+        current_per_loop = current * self.physics.total_turns / num_loops
+        
+        bz_total = 0
+        br_total = 0
+        
+        for loop_z in loop_positions:
+            bz_loop, br_loop = self._biot_savart_circular_loop(
+                z, r, loop_z, self.physics.avg_coil_radius, current_per_loop
+            )
+            bz_total += bz_loop
+            br_total += br_loop
+        
+        return bz_total, br_total
+
     def _biot_savart_circular_loop(self, z, r, loop_z, loop_radius, current):
         """
         Calculate magnetic field from a circular current loop using exact Biot-Savart law.
@@ -200,6 +294,252 @@ class CoilgunFieldVisualizer:
         
         return Bz, Br
     
+    def trace_field_lines_3d(self, field_data_3d, start_points, max_length=0.2, step_size=0.001):
+        """
+        Trace 3D magnetic field lines from starting points.
+        
+        Args:
+            field_data_3d: 3D field data from calculate_bfield_3d
+            start_points: List of (x, y, z) starting points
+            max_length: Maximum length of field line
+            step_size: Integration step size
+            
+        Returns:
+            List of field line coordinates
+        """
+        from scipy.interpolate import RegularGridInterpolator
+        
+        X, Y, Z = field_data_3d['X'], field_data_3d['Y'], field_data_3d['Z']
+        Bx, By, Bz = field_data_3d['Bx'], field_data_3d['By'], field_data_3d['Bz']
+        
+        # Create interpolators for field components
+        z_points = Z[:, 0, 0]
+        x_points = X[0, :, 0]
+        y_points = Y[0, 0, :]
+        
+        interp_bx = RegularGridInterpolator((z_points, x_points, y_points), Bx, 
+                                           bounds_error=False, fill_value=0)
+        interp_by = RegularGridInterpolator((z_points, x_points, y_points), By, 
+                                           bounds_error=False, fill_value=0)
+        interp_bz = RegularGridInterpolator((z_points, x_points, y_points), Bz, 
+                                           bounds_error=False, fill_value=0)
+        
+        def field_func(pos):
+            """Field function for integration."""
+            z, x, y = pos
+            bx = interp_bx([z, x, y])[0]
+            by = interp_by([z, x, y])[0]
+            bz = interp_bz([z, x, y])[0]
+            
+            # Normalize to unit vector
+            b_mag = np.sqrt(bx**2 + by**2 + bz**2)
+            if b_mag > 1e-12:
+                return np.array([bz, bx, by]) / b_mag
+            else:
+                return np.array([0, 0, 0])
+        
+        field_lines = []
+        
+        for start_point in start_points:
+            x0, y0, z0 = start_point
+            
+            # Trace forward
+            t = np.arange(0, max_length, step_size)
+            try:
+                line_forward = odeint(lambda pos, t: field_func(pos), [z0, x0, y0], t)
+                
+                # Trace backward
+                t_back = np.arange(0, -max_length, -step_size)
+                line_backward = odeint(lambda pos, t: -field_func(pos), [z0, x0, y0], t_back)
+                
+                # Combine and reorder
+                line_full = np.vstack([line_backward[::-1][:-1], line_forward])
+                
+                # Convert back to x, y, z order
+                field_line = np.column_stack([line_full[:, 1], line_full[:, 2], line_full[:, 0]])
+                field_lines.append(field_line)
+                
+            except Exception as e:
+                print(f"Warning: Field line tracing failed from {start_point}: {e}")
+                continue
+        
+        return field_lines
+    
+    def create_3d_coil_geometry(self, num_turns_visual=20):
+        """
+        Create 3D coil geometry for visualization.
+        
+        Args:
+            num_turns_visual: Number of turns to show (for visual clarity)
+            
+        Returns:
+            Coil coordinates for 3D plotting
+        """
+        # Create helical coil path
+        turns = np.linspace(0, num_turns_visual, 1000)
+        theta = 2 * np.pi * turns
+        
+        # Axial position
+        z_coil = (turns / num_turns_visual) * self.physics.coil_length
+        
+        # Create multiple layers
+        coil_lines = []
+        
+        for layer in range(self.physics.num_layers):
+            # Radius for this layer
+            layer_radius = (self.physics.coil_inner_radius + 
+                           layer * (self.physics.coil_outer_radius - self.physics.coil_inner_radius) / self.physics.num_layers)
+            
+            # Coordinates for this layer
+            x_coil = layer_radius * np.cos(theta)
+            y_coil = layer_radius * np.sin(theta)
+            
+            coil_lines.append(np.column_stack([x_coil, y_coil, z_coil]))
+        
+        return coil_lines
+    
+    def create_3d_projectile_geometry(self, position):
+        """
+        Create 3D projectile geometry at given position.
+        
+        Args:
+            position: Axial position of projectile
+            
+        Returns:
+            Projectile mesh coordinates
+        """
+        # Create cylindrical projectile
+        theta = np.linspace(0, 2*np.pi, 20)
+        z_proj = np.array([position - self.physics.proj_length, position])
+        
+        # Create surface coordinates
+        theta_mesh, z_mesh = np.meshgrid(theta, z_proj)
+        x_mesh = self.physics.proj_radius * np.cos(theta_mesh)
+        y_mesh = self.physics.proj_radius * np.sin(theta_mesh)
+        
+        return x_mesh, y_mesh, z_mesh
+    
+    def plot_3d_field_visualization(self, current, save_path=None, interactive=True,
+                                   show_field_lines=True, show_coil=True, 
+                                   projectile_position=None):
+        """
+        Create comprehensive 3D visualization of magnetic field and coil geometry.
+        
+        Args:
+            current: Current for field calculation
+            save_path: Path to save plot
+            interactive: Whether to create interactive plot
+            show_field_lines: Whether to show 3D field lines
+            show_coil: Whether to show coil geometry
+            projectile_position: Position of projectile
+        """
+        print("Creating 3D field visualization...")
+        
+        # Calculate 3D field data
+        field_data_3d = self.calculate_bfield_3d(current, num_z=40, num_x=25, num_y=25)
+        
+        # Create figure
+        fig = plt.figure(figsize=(16, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Plot field magnitude as volume rendering (simplified with scatter)
+        if True:  # Volume rendering
+            X, Y, Z = field_data_3d['X'], field_data_3d['Y'], field_data_3d['Z']
+            B_mag = field_data_3d['B_magnitude']
+            
+            # Sample points for visualization (reduce density)
+            skip = 2
+            x_sample = X[::skip, ::skip, ::skip].flatten()
+            y_sample = Y[::skip, ::skip, ::skip].flatten()
+            z_sample = Z[::skip, ::skip, ::skip].flatten()
+            b_sample = B_mag[::skip, ::skip, ::skip].flatten()
+            
+            # Only plot points with significant field
+            threshold = np.percentile(b_sample, 70)
+            mask = b_sample > threshold
+            
+            scatter = ax.scatter(x_sample[mask] * 1000, y_sample[mask] * 1000, z_sample[mask] * 1000,
+                               c=b_sample[mask] * 1000, cmap='plasma', alpha=0.3, s=10)
+            
+            # Add colorbar
+            cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, aspect=20)
+            cbar.set_label('|B| (mT)', fontsize=12)
+        
+        # Plot 3D field lines
+        if show_field_lines:
+            print("Tracing 3D field lines...")
+            
+            # Create starting points for field lines
+            start_points = []
+            
+            # Field lines from coil inner radius
+            num_lines = 12
+            theta_start = np.linspace(0, 2*np.pi, num_lines, endpoint=False)
+            
+            for theta in theta_start:
+                for z_start in [0.01, self.physics.coil_length/2, self.physics.coil_length - 0.01]:
+                    r_start = self.physics.coil_inner_radius * 1.1
+                    x_start = r_start * np.cos(theta)
+                    y_start = r_start * np.sin(theta)
+                    start_points.append([x_start, y_start, z_start])
+            
+            # Trace field lines
+            field_lines = self.trace_field_lines_3d(field_data_3d, start_points)
+            
+            # Plot field lines
+            for i, line in enumerate(field_lines):
+                if len(line) > 10:  # Only plot substantial field lines
+                    ax.plot(line[:, 0] * 1000, line[:, 1] * 1000, line[:, 2] * 1000,
+                           'blue', alpha=0.7, linewidth=1.5)
+        
+        # Plot 3D coil geometry
+        if show_coil:
+            print("Rendering 3D coil geometry...")
+            coil_lines = self.create_3d_coil_geometry(num_turns_visual=8)
+            
+            for i, coil_line in enumerate(coil_lines):
+                color = plt.cm.copper(i / len(coil_lines))
+                ax.plot(coil_line[:, 0] * 1000, coil_line[:, 1] * 1000, coil_line[:, 2] * 1000,
+                       color=color, linewidth=3, alpha=0.8)
+        
+        # Plot projectile
+        if projectile_position is not None:
+            print("Adding projectile geometry...")
+            x_proj, y_proj, z_proj = self.create_3d_projectile_geometry(projectile_position)
+            
+            ax.plot_surface(x_proj * 1000, y_proj * 1000, z_proj * 1000,
+                           color='red', alpha=0.8, linewidth=0)
+        
+        # Set labels and title
+        ax.set_xlabel('X (mm)', fontsize=12)
+        ax.set_ylabel('Y (mm)', fontsize=12)
+        ax.set_zlabel('Z (mm)', fontsize=12)
+        ax.set_title(f'3D Coilgun Magnetic Field Visualization (I = {current:.0f} A)', 
+                     fontsize=14, fontweight='bold')
+        
+        # Set equal aspect ratio
+        max_range = max(
+            self.physics.coil_outer_radius * 1000,
+            self.physics.coil_length * 1000
+        )
+        ax.set_xlim([-max_range*1.2, max_range*1.2])
+        ax.set_ylim([-max_range*1.2, max_range*1.2])
+        ax.set_zlim([-max_range*0.3, max_range*1.8])
+        
+        # Improve viewing angle
+        ax.view_init(elev=20, azim=45)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"3D visualization saved to: {save_path}")
+        
+        if interactive:
+            plt.show()
+        
+        return fig, ax
+
     def plot_bfield_contours(self, field_data, save_path=None, show_coil=True, 
                             show_projectile=True, projectile_position=None):
         """
@@ -375,7 +715,97 @@ class CoilgunFieldVisualizer:
             print(f"On-axis field profile saved to: {save_path}")
         
         plt.show()
-    
+
+    def animate_3d_projectile_motion(self, simulation_results, save_path=None, interval=100):
+        """
+        Create 3D animation of projectile motion with magnetic field visualization.
+        
+        Args:
+            simulation_results: Results from CoilgunSimulation
+            save_path: Path to save animation
+            interval: Animation interval in ms
+        """
+        if simulation_results.results['time'] is None:
+            print("No detailed simulation results available for animation.")
+            return
+        
+        # Extract data
+        time_data = simulation_results.results['time']
+        current_data = simulation_results.results['current']
+        position_data = simulation_results.results['position']
+        
+        # Select frames for animation
+        num_frames = min(50, len(time_data) // 20)  # Reduce frames for 3D
+        frame_indices = np.linspace(0, len(time_data)-1, num_frames, dtype=int)
+        
+        print(f"Creating 3D animation with {num_frames} frames...")
+        
+        # Create figure
+        fig = plt.figure(figsize=(16, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Pre-render coil geometry
+        coil_lines = self.create_3d_coil_geometry(num_turns_visual=6)
+        
+        def animate(frame_idx):
+            ax.clear()
+            
+            idx = frame_indices[frame_idx]
+            current = current_data[idx]
+            position = position_data[idx]
+            time = time_data[idx]
+            
+            # Plot coil
+            for i, coil_line in enumerate(coil_lines):
+                color = plt.cm.copper(i / len(coil_lines))
+                ax.plot(coil_line[:, 0] * 1000, coil_line[:, 1] * 1000, coil_line[:, 2] * 1000,
+                       color=color, linewidth=2, alpha=0.7)
+            
+            # Plot projectile
+            x_proj, y_proj, z_proj = self.create_3d_projectile_geometry(position)
+            ax.plot_surface(x_proj * 1000, y_proj * 1000, z_proj * 1000,
+                           color='red', alpha=0.9, linewidth=0)
+            
+            # Add some field lines around projectile
+            if current > 10:  # Only show field lines when current is significant
+                # Simple field visualization - radial lines from coil center
+                theta_lines = np.linspace(0, 2*np.pi, 8, endpoint=False)
+                for theta in theta_lines:
+                    r_line = np.linspace(0, self.physics.coil_outer_radius * 1.5, 20)
+                    x_line = r_line * np.cos(theta) * 1000
+                    y_line = r_line * np.sin(theta) * 1000
+                    z_line = np.full_like(r_line, self.physics.coil_center * 1000)
+                    
+                    # Color by field strength (approximate)
+                    colors = plt.cm.viridis(r_line / (self.physics.coil_outer_radius * 1.5))
+                    for i in range(len(r_line)-1):
+                        ax.plot([x_line[i], x_line[i+1]], [y_line[i], y_line[i+1]], 
+                               [z_line[i], z_line[i+1]], color=colors[i], alpha=0.6)
+            
+            # Set labels and title
+            ax.set_xlabel('X (mm)')
+            ax.set_ylabel('Y (mm)')
+            ax.set_zlabel('Z (mm)')
+            ax.set_title(f'3D Coilgun Animation - t={time*1000:.1f}ms, I={current:.0f}A, v={simulation_results.results["velocity"][idx]:.1f}m/s')
+            
+            # Set consistent axis limits
+            max_range = max(self.physics.coil_outer_radius * 1000, self.physics.coil_length * 1000)
+            ax.set_xlim([-max_range*1.2, max_range*1.2])
+            ax.set_ylim([-max_range*1.2, max_range*1.2])
+            ax.set_zlim([-max_range*0.3, max_range*1.8])
+            
+            ax.view_init(elev=15, azim=frame_idx * 2)  # Slowly rotate view
+        
+        anim = FuncAnimation(fig, animate, frames=num_frames, interval=interval, blit=False)
+        
+        if save_path:
+            print("Saving 3D animation (this may take a while)...")
+            anim.save(save_path, writer='pillow', fps=1000//interval)
+            print(f"3D animation saved to: {save_path}")
+        
+        plt.show()
+        return anim
+
     def animate_field_evolution(self, simulation_results, save_path=None, interval=50):
         """
         Create animation of magnetic field evolution during projectile motion.
@@ -519,6 +949,91 @@ class CoilgunFieldVisualizer:
             label='Projectile'
         )
         ax.add_patch(projectile)
+
+
+def create_comprehensive_visualization_suite(config_file, simulation_results=None, 
+                                           output_dir="comprehensive_visualizations"):
+    """
+    Create a comprehensive suite of visualizations including 3D field lines and projectile motion.
+    
+    Args:
+        config_file: Path to coilgun configuration file
+        simulation_results: CoilgunSimulation results (optional)
+        output_dir: Directory to save visualization files
+    """
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+    
+    print("Creating comprehensive visualization suite...")
+    
+    # Initialize physics engine and visualizer
+    physics = CoilgunPhysicsEngine(config_file)
+    visualizer = CoilgunFieldVisualizer(physics)
+    
+    # 1. 3D Field Visualization
+    print("\n1. Creating 3D magnetic field visualization...")
+    currents = [100, 300, 500]
+    
+    for current in currents:
+        print(f"   Creating 3D visualization for {current}A...")
+        visualizer.plot_3d_field_visualization(
+            current, 
+            save_path=output_path / f"3d_field_visualization_{current}A.png",
+            interactive=False,
+            projectile_position=physics.initial_position
+        )
+    
+    # 2. Traditional 2D field analysis
+    print("\n2. Creating 2D field analysis...")
+    for current in currents:
+        print(f"   Calculating 2D field for {current}A...")
+        field_data = visualizer.calculate_bfield_map_2d(current, num_z=80, num_r=40)
+        
+        # 2D contour plots
+        visualizer.plot_bfield_contours(
+            field_data, 
+            save_path=output_path / f"bfield_contours_{current}A.png",
+            show_projectile=True,
+            projectile_position=physics.initial_position
+        )
+        
+        # 3D surface plot
+        visualizer.plot_bfield_3d(
+            field_data,
+            save_path=output_path / f"bfield_3d_surface_{current}A.png"
+        )
+    
+    # 3. On-axis field profiles
+    print("\n3. Creating on-axis field profiles...")
+    visualizer.plot_onaxis_field_profile(
+        current_values=currents,
+        save_path=output_path / "onaxis_field_profiles.png"
+    )
+    
+    # 4. If simulation results provided, create animations
+    if simulation_results is not None:
+        print("\n4. Creating field evolution animations...")
+        
+        # 2D field evolution animation
+        visualizer.animate_field_evolution(
+            simulation_results,
+            save_path=output_path / "field_evolution_2d.gif",
+            interval=100
+        )
+        
+        # 3D projectile motion animation
+        print("\n5. Creating 3D projectile motion animation...")
+        visualizer.animate_3d_projectile_motion(
+            simulation_results,
+            save_path=output_path / "projectile_motion_3d.gif",
+            interval=150
+        )
+    
+    print(f"\nComprehensive visualization suite complete!")
+    print(f"Files saved to: {output_path.absolute()}")
+    
+    return visualizer
 
 
 def create_field_visualization_suite(config_file, output_dir="field_visualizations"):
@@ -729,6 +1244,40 @@ def main():
     import sys
     import json
     
+    # Check command line arguments for special modes
+    if len(sys.argv) >= 2:
+        if sys.argv[1] == '--3d':
+            # Special 3D visualization mode
+            print("=" * 60)
+            print("3D COILGUN VISUALIZATION MODE")
+            print("=" * 60)
+            
+            if len(sys.argv) >= 3:
+                config_file = sys.argv[2]
+            else:
+                config_file = input("Enter config file path: ").strip()
+            
+            if not Path(config_file).exists():
+                print(f"Error: Config file '{config_file}' not found.")
+                sys.exit(1)
+            
+            # Run simulation and create comprehensive 3D visualizations
+            print("Running simulation for 3D visualization...")
+            sim = CoilgunSimulation(config_file)
+            results = sim.run_simulation(save_data=True, verbose=True)
+            
+            # Create comprehensive 3D visualization suite
+            output_dir = f"3d_visualizations_{Path(config_file).stem}"
+            visualizer = create_comprehensive_visualization_suite(
+                config_file, 
+                simulation_results=sim,
+                output_dir=output_dir
+            )
+            
+            print(f"\n3D visualizations complete! Check: {output_dir}/")
+            return
+    
+    # Standard mode - select results directory
     results_dir = select_results_directory()
     
     print("=" * 60)
@@ -750,6 +1299,10 @@ def main():
         print(f"Final velocity: {summary.get('final_velocity_ms', 'N/A')} m/s")
         print(f"Efficiency: {summary.get('efficiency_percent', 'N/A')}%")
         print(f"Max current: {summary.get('max_current_A', 'N/A')} A")
+        
+        # Initialize visualizer
+        physics = CoilgunPhysicsEngine(config_file)
+        visualizer = CoilgunFieldVisualizer(physics)
         
         if time_series_data is not None:
             print("Creating visualizations with time series data...")
@@ -780,24 +1333,56 @@ def main():
             print(f"Creating detailed plots in: {output_dir}/")
             sim.plot_results(save_plots=True, output_dir=output_dir)
             
-            # Create field visualization suite
-            print("Creating magnetic field visualizations...")
-            visualizer, _, _ = create_field_visualization_suite(config_file, output_dir)
+            # Create comprehensive 3D visualizations
+            print("Creating comprehensive 3D magnetic field visualizations...")
+            create_comprehensive_visualization_suite(
+                config_file, 
+                simulation_results=sim,
+                output_dir=output_dir
+            )
+            
+            # Create individual 3D field visualization
+            print("Creating static 3D field visualization...")
+            max_current = np.max(sim.results['current']) if sim.results['current'] is not None else 300
+            initial_position = sim.results['position'][0] if sim.results['position'] is not None else physics.initial_position
+            
+            visualizer.plot_3d_field_visualization(
+                current=max_current,
+                save_path=Path(output_dir) / "3d_field_comprehensive.png",
+                interactive=False,
+                show_field_lines=True,
+                show_coil=True,
+                projectile_position=initial_position
+            )
             
         else:
             print("No time series data available. Creating basic field visualizations...")
             # Create field visualization suite without animation
-            visualizer, _, _ = create_field_visualization_suite(config_file, output_dir)
+            create_field_visualization_suite(config_file, output_dir)
+            
+            # Create 3D field visualization
+            print("Creating 3D field visualization...")
+            visualizer.plot_3d_field_visualization(
+                current=300,  # Default current
+                save_path=Path(output_dir) / "3d_field_static.png",
+                interactive=False,
+                projectile_position=physics.initial_position
+            )
         
         print("\n" + "="*50)
         print("VISUALIZATION COMPLETE")
         print("="*50)
         print(f"Files saved to: {output_dir}/")
+        print("Generated visualizations:")
         print("- Simulation result plots (if time series data available)")
-        print("- Magnetic field contour plots")
+        print("- 2D magnetic field contour plots")
         print("- 3D field surface plots") 
+        print("- 3D comprehensive field visualization with field lines")
         print("- On-axis field profiles")
-        print("- Field evolution animation (if time series data available)")
+        print("- Field evolution animations (if time series data available)")
+        print("- 3D projectile motion animation (if time series data available)")
+        print("\nFor advanced 3D-only mode, run:")
+        print("python view.py --3d <config_file>")
         print("\nCheck the output directory for all visualization files!")
         
     except Exception as e:
@@ -807,6 +1392,98 @@ def main():
         sys.exit(1)
 
 
+def create_demo_visualization():
+    """
+    Create a demonstration visualization using a default configuration.
+    """
+    print("Creating demonstration coilgun visualization...")
+    
+    # Create a demo configuration
+    demo_config = {
+        "coil": {
+            "inner_diameter": 0.015,
+            "length": 0.075,
+            "wire_gauge_awg": 16,
+            "num_layers": 6,
+            "wire_material": "Copper",
+            "packing_factor": 0.85,
+            "insulation_thickness": 5e-5
+        },
+        "projectile": {
+            "diameter": 0.012,
+            "length": 0.025,
+            "material": "Low_Carbon_Steel",
+            "initial_position": -0.05,
+            "initial_velocity": 0.0
+        },
+        "capacitor": {
+            "capacitance": 0.003,
+            "initial_voltage": 400,
+            "esr": 0.01,
+            "esl": 5e-8
+        },
+        "simulation": {
+            "time_span": [0, 0.02],
+            "max_step": 1e-6,
+            "tolerance": 1e-9,
+            "method": "RK45"
+        },
+        "circuit_model": {
+            "switch_resistance": 0.001,
+            "switch_inductance": 1e-8,
+            "parasitic_capacitance": 1e-11,
+            "include_skin_effect": False,
+            "include_proximity_effect": False
+        },
+        "magnetic_model": {
+            "calculation_method": "biot_savart",
+            "axial_discretization": 1000,
+            "radial_discretization": 100,
+            "include_saturation": False,
+            "include_hysteresis": False
+        },
+        "output": {
+            "save_trajectory": True,
+            "save_current_profile": True,
+            "save_field_data": False,
+            "print_progress": True,
+            "save_interval": 100
+        }
+    }
+    
+    # Save demo config
+    demo_config_file = "demo_coilgun_config.json"
+    with open(demo_config_file, 'w') as f:
+        json.dump(demo_config, f, indent=4)
+    
+    print(f"Demo configuration saved to: {demo_config_file}")
+    
+    # Run simulation
+    print("Running demonstration simulation...")
+    sim = CoilgunSimulation(demo_config_file)
+    results = sim.run_simulation(save_data=True, verbose=True)
+    
+    # Create comprehensive visualizations
+    print("Creating comprehensive demonstration visualizations...")
+    output_dir = "demo_visualizations"
+    visualizer = create_comprehensive_visualization_suite(
+        demo_config_file,
+        simulation_results=sim,
+        output_dir=output_dir
+    )
+    
+    print(f"\nDemo visualization complete!")
+    print(f"Check the '{output_dir}' directory for all visualization files.")
+    print(f"Config file: {demo_config_file}")
+    
+    return visualizer, sim
+
+
 if __name__ == "__main__":
     import os
-    main()
+    
+    # Check for demo mode
+    if len(sys.argv) >= 2 and sys.argv[1] == '--demo':
+        create_demo_visualization()
+    else:
+        main()
