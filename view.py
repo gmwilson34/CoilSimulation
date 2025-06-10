@@ -1,0 +1,636 @@
+#!/usr/bin/env python3
+"""
+Advanced Magnetic Field Visualization for Coilgun Simulation
+
+This module provides comprehensive visualization of magnetic fields, force maps,
+and dynamic simulation results using the physics equations from the main engine.
+
+Features:
+- 2D magnetic field contour plots
+- 3D field surface plots
+- Field line visualization
+- Force and inductance mapping
+- Animation of field evolution during simulation
+- Interactive field exploration
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.colors import LogNorm
+from matplotlib.animation import FuncAnimation
+from mpl_toolkits.mplot3d import Axes3D
+from pathlib import Path
+
+from equations import CoilgunPhysicsEngine
+from solve import CoilgunSimulation
+
+# Set up plotting style
+plt.style.use('default')
+
+# Optional seaborn import for enhanced styling
+try:
+    import seaborn as sns
+    sns.set_palette("viridis")
+    HAS_SEABORN = True
+except ImportError:
+    HAS_SEABORN = False
+
+class CoilgunFieldVisualizer:
+    """
+    Advanced magnetic field and force visualization for coilgun systems.
+    """
+    
+    def __init__(self, physics_engine):
+        """
+        Initialize the visualizer with a physics engine.
+        
+        Args:
+            physics_engine: CoilgunPhysicsEngine instance
+        """
+        self.physics = physics_engine
+        self.fig_size = (15, 10)
+        
+    def calculate_bfield_map_2d(self, current, z_range=None, r_range=None, 
+                                num_z=100, num_r=50, include_projectile=True, 
+                                projectile_position=None):
+        """
+        Calculate detailed 2D magnetic field map using Biot-Savart law.
+        
+        Args:
+            current: Current in the coil (A)
+            z_range: [z_min, z_max] axial range (m)
+            r_range: [r_min, r_max] radial range (m)
+            num_z: Number of axial grid points
+            num_r: Number of radial grid points
+            include_projectile: Whether to include projectile effects
+            projectile_position: Position of projectile (if included)
+            
+        Returns:
+            dict: Contains Z, R meshgrids and Bz, Br field components
+        """
+        # Set default ranges if not provided
+        if z_range is None:
+            z_range = [-self.physics.coil_length, 2*self.physics.coil_length]
+        if r_range is None:
+            r_range = [0, 3*self.physics.coil_outer_radius]
+        
+        # Create coordinate grids
+        z_points = np.linspace(z_range[0], z_range[1], num_z)
+        r_points = np.linspace(r_range[0], r_range[1], num_r)
+        Z, R = np.meshgrid(z_points, r_points)
+        
+        # Initialize field arrays
+        Bz = np.zeros_like(Z)
+        Br = np.zeros_like(Z)
+        B_magnitude = np.zeros_like(Z)
+        
+        print(f"Calculating B-field on {num_z}×{num_r} grid...")
+        
+        # Calculate field using superposition of current loops
+        # Discretize coil into current loops
+        num_loops = max(50, int(self.physics.total_turns / 5))
+        loop_positions = np.linspace(0, self.physics.coil_length, num_loops)
+        current_per_loop = current * self.physics.total_turns / num_loops
+        
+        for i, z in enumerate(z_points):
+            for j, r in enumerate(r_points):
+                bz_total = 0
+                br_total = 0
+                
+                # Sum contributions from all current loops
+                for loop_z in loop_positions:
+                    # Use exact Biot-Savart solution for circular loop
+                    bz_loop, br_loop = self._biot_savart_circular_loop(
+                        z, r, loop_z, self.physics.avg_coil_radius, current_per_loop
+                    )
+                    bz_total += bz_loop
+                    br_total += br_loop
+                
+                Bz[j, i] = bz_total
+                Br[j, i] = br_total
+                B_magnitude[j, i] = np.sqrt(bz_total**2 + br_total**2)
+        
+        print("B-field calculation complete.")
+        
+        return {
+            'Z': Z,
+            'R': R, 
+            'Bz': Bz,
+            'Br': Br,
+            'B_magnitude': B_magnitude,
+            'current': current,
+            'z_range': z_range,
+            'r_range': r_range
+        }
+    
+    def _biot_savart_circular_loop(self, z, r, loop_z, loop_radius, current):
+        """
+        Calculate magnetic field from a circular current loop using exact Biot-Savart law.
+        
+        Args:
+            z, r: Field point coordinates (m)
+            loop_z: Axial position of the loop (m)
+            loop_radius: Radius of the current loop (m)
+            current: Current in the loop (A)
+            
+        Returns:
+            Bz, Br: Axial and radial field components (T)
+        """
+        mu0 = self.physics.mu0
+        
+        # Distance from loop to field point
+        dz = z - loop_z
+        
+        # Handle on-axis case (r = 0)
+        if r < 1e-12:
+            # On-axis formula
+            distance_cubed = (loop_radius**2 + dz**2)**(3/2)
+            if distance_cubed > 1e-12:
+                Bz = mu0 * current * loop_radius**2 / (2 * distance_cubed)
+            else:
+                Bz = 0
+            Br = 0
+            return Bz, Br
+        
+        # Off-axis calculation using elliptic integrals (simplified)
+        # For computational efficiency, use dipole approximation for far field
+        distance = np.sqrt(dz**2 + r**2)
+        
+        if distance > 3 * loop_radius:
+            # Far field dipole approximation
+            magnetic_moment = np.pi * loop_radius**2 * current
+            
+            cos_theta = dz / distance
+            sin_theta = r / distance
+            
+            B_parallel = (mu0 * magnetic_moment / (4 * np.pi * distance**3)) * 2 * cos_theta
+            B_perpendicular = (mu0 * magnetic_moment / (4 * np.pi * distance**3)) * sin_theta
+            
+            Bz = B_parallel * cos_theta - B_perpendicular * sin_theta
+            Br = B_parallel * sin_theta + B_perpendicular * cos_theta
+            
+        else:
+            # Near field - use more accurate calculation
+            # Simplified version of elliptic integral solution
+            k_squared = 4 * loop_radius * r / ((loop_radius + r)**2 + dz**2)
+            
+            if k_squared < 1e-12:
+                Bz = 0
+                Br = 0
+            else:
+                # Approximate elliptic integrals for computational efficiency
+                k = np.sqrt(k_squared)
+                
+                # Complete elliptic integrals (approximated)
+                if k < 0.9:
+                    K_k = np.pi/2 * (1 + k**2/4 + 9*k**4/64)  # Approximation for K(k)
+                    E_k = np.pi/2 * (1 - k**2/4 - 3*k**4/64)  # Approximation for E(k)
+                else:
+                    # High k approximation
+                    K_k = np.log(4/np.sqrt(1-k**2))
+                    E_k = 1
+                
+                # Field components
+                C = mu0 * current / (4 * np.pi * np.sqrt((loop_radius + r)**2 + dz**2))
+                
+                Bz = C * (((loop_radius**2 - r**2 - dz**2) * E_k + (loop_radius + r)**2 * K_k + dz**2) / (loop_radius - r)**2)
+                Br = C * dz / r * (((loop_radius**2 + r**2 + dz**2) * E_k - (loop_radius - r)**2 * K_k) / (loop_radius - r)**2)
+        
+        return Bz, Br
+    
+    def plot_bfield_contours(self, field_data, save_path=None, show_coil=True, 
+                            show_projectile=True, projectile_position=None):
+        """
+        Create detailed magnetic field contour plots.
+        
+        Args:
+            field_data: Field data from calculate_bfield_map_2d
+            save_path: Path to save the plot (optional)
+            show_coil: Whether to show coil geometry
+            show_projectile: Whether to show projectile
+            projectile_position: Position of projectile
+        """
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=self.fig_size)
+        fig.suptitle(f'Coilgun Magnetic Field Analysis (I = {field_data["current"]:.0f} A)', 
+                     fontsize=16, fontweight='bold')
+        
+        Z = field_data['Z'] * 1000  # Convert to mm
+        R = field_data['R'] * 1000
+        Bz = field_data['Bz'] * 1000  # Convert to mT
+        Br = field_data['Br'] * 1000
+        B_mag = field_data['B_magnitude'] * 1000
+        
+        # Plot 1: Axial field component (Bz)
+        contour1 = ax1.contourf(Z, R, Bz, levels=50, cmap='RdBu_r')
+        ax1.contour(Z, R, Bz, levels=20, colors='black', alpha=0.3, linewidths=0.5)
+        fig.colorbar(contour1, ax=ax1, label='Bz (mT)')
+        ax1.set_title('Axial Magnetic Field (Bz)')
+        ax1.set_xlabel('Axial Position (mm)')
+        ax1.set_ylabel('Radial Position (mm)')
+        
+        # Plot 2: Radial field component (Br)
+        contour2 = ax2.contourf(Z, R, Br, levels=50, cmap='RdBu_r')
+        ax2.contour(Z, R, Br, levels=20, colors='black', alpha=0.3, linewidths=0.5)
+        fig.colorbar(contour2, ax=ax2, label='Br (mT)')
+        ax2.set_title('Radial Magnetic Field (Br)')
+        ax2.set_xlabel('Axial Position (mm)')
+        ax2.set_ylabel('Radial Position (mm)')
+        
+        # Plot 3: Field magnitude
+        contour3 = ax3.contourf(Z, R, B_mag, levels=50, cmap='plasma')
+        ax3.contour(Z, R, B_mag, levels=20, colors='white', alpha=0.5, linewidths=0.5)
+        fig.colorbar(contour3, ax=ax3, label='|B| (mT)')
+        ax3.set_title('Magnetic Field Magnitude')
+        ax3.set_xlabel('Axial Position (mm)')
+        ax3.set_ylabel('Radial Position (mm)')
+        
+        # Plot 4: Field lines (streamplot)
+        # Subsample for cleaner streamlines
+        skip = 3
+        ax4.streamplot(Z[::skip, ::skip], R[::skip, ::skip], 
+                      Bz[::skip, ::skip], Br[::skip, ::skip],
+                      color=B_mag[::skip, ::skip], cmap='viridis',
+                      density=1.5, arrowsize=1.2)
+        ax4.set_title('Magnetic Field Lines')
+        ax4.set_xlabel('Axial Position (mm)')
+        ax4.set_ylabel('Radial Position (mm)')
+        
+        # Add coil geometry to all plots
+        if show_coil:
+            for ax in [ax1, ax2, ax3, ax4]:
+                self._add_coil_geometry(ax)
+        
+        # Add projectile if specified
+        if show_projectile and projectile_position is not None:
+            for ax in [ax1, ax2, ax3, ax4]:
+                self._add_projectile_geometry(ax, projectile_position)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"B-field contour plot saved to: {save_path}")
+        
+        plt.show()
+    
+    def plot_bfield_3d(self, field_data, save_path=None):
+        """
+        Create 3D surface plot of magnetic field magnitude.
+        
+        Args:
+            field_data: Field data from calculate_bfield_map_2d
+            save_path: Path to save the plot (optional)
+        """
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        Z = field_data['Z'] * 1000  # Convert to mm
+        R = field_data['R'] * 1000
+        B_mag = field_data['B_magnitude'] * 1000  # Convert to mT
+        
+        # Create 3D surface plot
+        surf = ax.plot_surface(Z, R, B_mag, cmap='plasma', alpha=0.8, 
+                              linewidth=0, antialiased=True)
+        
+        # Add contour lines at the base
+        ax.contour(Z, R, B_mag, zdir='z', offset=0, levels=20, cmap='plasma', alpha=0.5)
+        
+        ax.set_xlabel('Axial Position (mm)')
+        ax.set_ylabel('Radial Position (mm)')
+        ax.set_zlabel('Magnetic Field Magnitude (mT)')
+        ax.set_title(f'3D Magnetic Field Distribution (I = {field_data["current"]:.0f} A)')
+        
+        # Add colorbar
+        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=20, label='|B| (mT)')
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"3D B-field plot saved to: {save_path}")
+        
+        plt.show()
+    
+    def plot_onaxis_field_profile(self, current_values=[100, 300, 500], save_path=None):
+        """
+        Plot magnetic field along the coil axis for different currents.
+        
+        Args:
+            current_values: List of current values to plot (A)
+            save_path: Path to save the plot (optional)
+        """
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        
+        # Axial positions
+        z_points = np.linspace(-self.physics.coil_length, 2*self.physics.coil_length, 300)
+        z_mm = z_points * 1000  # Convert to mm
+        
+        # Plot field for different currents
+        for current in current_values:
+            bz_values = []
+            for z in z_points:
+                bz = self.physics.magnetic_field_solenoid_on_axis(z, current)
+                bz_values.append(bz * 1000)  # Convert to mT
+            
+            ax1.plot(z_mm, bz_values, linewidth=2, label=f'{current} A')
+        
+        ax1.set_xlabel('Axial Position (mm)')
+        ax1.set_ylabel('Magnetic Field Bz (mT)')
+        ax1.set_title('On-Axis Magnetic Field Profile')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Add coil boundaries
+        ax1.axvline(0, color='red', linestyle='--', alpha=0.7, label='Coil start')
+        ax1.axvline(self.physics.coil_length * 1000, color='red', linestyle='--', alpha=0.7, label='Coil end')
+        ax1.axvline(self.physics.coil_center * 1000, color='orange', linestyle=':', alpha=0.7, label='Coil center')
+        
+        # Plot force profile
+        current = max(current_values)
+        positions = np.linspace(-0.05, self.physics.coil_length + 0.05, 200)
+        positions_mm = positions * 1000
+        forces = []
+        
+        for pos in positions:
+            force = self.physics.magnetic_force_ferromagnetic(current, pos)
+            forces.append(force)
+        
+        ax2.plot(positions_mm, forces, 'purple', linewidth=2, label=f'Force @ {current} A')
+        ax2.set_xlabel('Projectile Position (mm)')
+        ax2.set_ylabel('Magnetic Force (N)')
+        ax2.set_title('Magnetic Force vs Position')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Add reference lines
+        ax2.axhline(0, color='black', linestyle='-', alpha=0.5)
+        ax2.axvline(0, color='red', linestyle='--', alpha=0.7)
+        ax2.axvline(self.physics.coil_length * 1000, color='red', linestyle='--', alpha=0.7)
+        ax2.axvline(self.physics.coil_center * 1000, color='orange', linestyle=':', alpha=0.7)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"On-axis field profile saved to: {save_path}")
+        
+        plt.show()
+    
+    def animate_field_evolution(self, simulation_results, save_path=None, interval=50):
+        """
+        Create animation of magnetic field evolution during projectile motion.
+        
+        Args:
+            simulation_results: Results from CoilgunSimulation
+            save_path: Path to save animation (optional)
+            interval: Animation interval in ms
+        """
+        if simulation_results.results['time'] is None:
+            print("No detailed simulation results available for animation.")
+            return
+        
+        # Subsample time points for animation
+        time_data = simulation_results.results['time']
+        current_data = simulation_results.results['current']
+        position_data = simulation_results.results['position']
+        
+        # Select frames for animation
+        num_frames = min(100, len(time_data) // 10)  # Limit to 100 frames
+        frame_indices = np.linspace(0, len(time_data)-1, num_frames, dtype=int)
+        
+        # Pre-calculate field data for efficiency
+        print("Pre-calculating field frames for animation...")
+        field_frames = []
+        
+        for i, idx in enumerate(frame_indices):
+            current = current_data[idx]
+            position = position_data[idx]
+            
+            if i % 20 == 0:
+                print(f"Calculating frame {i+1}/{num_frames}")
+            
+            # Calculate field with smaller grid for speed
+            field_data = self.calculate_bfield_map_2d(
+                current, num_z=50, num_r=30, 
+                projectile_position=position
+            )
+            field_frames.append({
+                'field': field_data,
+                'time': time_data[idx],
+                'current': current,
+                'position': position
+            })
+        
+        # Create animation
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+        
+        def animate(frame_idx):
+            for ax in [ax1, ax2, ax3, ax4]:
+                ax.clear()
+            
+            frame = field_frames[frame_idx]
+            field_data = frame['field']
+            
+            Z = field_data['Z'] * 1000
+            R = field_data['R'] * 1000
+            Bz = field_data['Bz'] * 1000
+            B_mag = field_data['B_magnitude'] * 1000
+            
+            # Plot field magnitude
+            im1 = ax1.contourf(Z, R, B_mag, levels=30, cmap='plasma')
+            ax1.set_title(f'|B| Field (t = {frame["time"]*1000:.1f} ms)')
+            ax1.set_xlabel('Position (mm)')
+            ax1.set_ylabel('Radius (mm)')
+            
+            # Plot axial field
+            im2 = ax2.contourf(Z, R, Bz, levels=30, cmap='RdBu_r')
+            ax2.set_title(f'Bz Field (I = {frame["current"]:.0f} A)')
+            ax2.set_xlabel('Position (mm)')
+            ax2.set_ylabel('Radius (mm)')
+            
+            # Add coil and projectile geometry
+            for ax in [ax1, ax2]:
+                self._add_coil_geometry(ax)
+                self._add_projectile_geometry(ax, frame['position'])
+            
+            # Plot current vs time
+            current_history = [f['current'] for f in field_frames[:frame_idx+1]]
+            time_history = [f['time']*1000 for f in field_frames[:frame_idx+1]]
+            
+            ax3.plot(time_history, current_history, 'b-', linewidth=2)
+            ax3.axvline(frame['time']*1000, color='red', linestyle='--')
+            ax3.set_xlabel('Time (ms)')
+            ax3.set_ylabel('Current (A)')
+            ax3.set_title('Current vs Time')
+            ax3.grid(True, alpha=0.3)
+            
+            # Plot position vs time
+            position_history = [f['position']*1000 for f in field_frames[:frame_idx+1]]
+            
+            ax4.plot(time_history, position_history, 'g-', linewidth=2)
+            ax4.axvline(frame['time']*1000, color='red', linestyle='--')
+            ax4.axhline(0, color='black', linestyle=':', alpha=0.5, label='Coil entrance')
+            ax4.axhline(self.physics.coil_center*1000, color='orange', linestyle=':', alpha=0.5, label='Coil center')
+            ax4.set_xlabel('Time (ms)')
+            ax4.set_ylabel('Position (mm)')
+            ax4.set_title('Projectile Position vs Time')
+            ax4.grid(True, alpha=0.3)
+            ax4.legend()
+            
+            plt.tight_layout()
+        
+        anim = FuncAnimation(fig, animate, frames=len(field_frames), 
+                           interval=interval, blit=False, repeat=True)
+        
+        if save_path:
+            anim.save(save_path, writer='pillow', fps=1000//interval)
+            print(f"Animation saved to: {save_path}")
+        
+        plt.show()
+        return anim
+    
+    def _add_coil_geometry(self, ax):
+        """Add coil geometry visualization to a plot."""
+        # Coil boundaries
+        coil_inner = patches.Rectangle(
+            (0, self.physics.coil_inner_radius * 1000), 
+            self.physics.coil_length * 1000,
+            (self.physics.coil_outer_radius - self.physics.coil_inner_radius) * 1000,
+            linewidth=2, edgecolor='brown', facecolor='brown', alpha=0.3,
+            label='Coil'
+        )
+        ax.add_patch(coil_inner)
+        
+        # Center line
+        ax.axvline(self.physics.coil_center * 1000, color='orange', 
+                  linestyle=':', alpha=0.7, linewidth=2, label='Coil center')
+    
+    def _add_projectile_geometry(self, ax, position):
+        """Add projectile geometry visualization to a plot."""
+        position_mm = position * 1000
+        proj_length_mm = self.physics.proj_length * 1000
+        proj_radius_mm = self.physics.proj_radius * 1000
+        
+        # Projectile rectangle
+        projectile = patches.Rectangle(
+            (position_mm - proj_length_mm, 0),
+            proj_length_mm, proj_radius_mm,
+            linewidth=2, edgecolor='red', facecolor='red', alpha=0.7,
+            label='Projectile'
+        )
+        ax.add_patch(projectile)
+
+
+def create_field_visualization_suite(config_file, output_dir="field_visualizations"):
+    """
+    Create a complete suite of magnetic field visualizations.
+    
+    Args:
+        config_file: Path to coilgun configuration file
+        output_dir: Directory to save visualization files
+    """
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+    
+    print("Creating comprehensive magnetic field visualization suite...")
+    
+    # Initialize physics engine and visualizer
+    physics = CoilgunPhysicsEngine(config_file)
+    visualizer = CoilgunFieldVisualizer(physics)
+    
+    # 1. Static field analysis at different currents
+    print("\n1. Creating static field analysis...")
+    currents = [100, 300, 500]
+    
+    for current in currents:
+        print(f"   Calculating field for {current}A...")
+        field_data = visualizer.calculate_bfield_map_2d(current, num_z=80, num_r=40)
+        
+        # 2D contour plots
+        visualizer.plot_bfield_contours(
+            field_data, 
+            save_path=output_path / f"bfield_contours_{current}A.png",
+            show_projectile=True,
+            projectile_position=physics.initial_position
+        )
+        
+        # 3D surface plot
+        visualizer.plot_bfield_3d(
+            field_data,
+            save_path=output_path / f"bfield_3d_{current}A.png"
+        )
+    
+    # 2. On-axis field profiles
+    print("\n2. Creating on-axis field profiles...")
+    visualizer.plot_onaxis_field_profile(
+        current_values=currents,
+        save_path=output_path / "onaxis_field_profiles.png"
+    )
+    
+    # 3. Dynamic simulation with field animation
+    print("\n3. Running simulation for field animation...")
+    sim = CoilgunSimulation(config_file)
+    results = sim.run_simulation(save_data=True, verbose=False)
+    
+    print("\n4. Creating field evolution animation...")
+    anim = visualizer.animate_field_evolution(
+        sim,
+        save_path=output_path / "field_evolution.gif",
+        interval=100
+    )
+    
+    print(f"\nVisualization suite complete! Files saved to: {output_path.absolute()}")
+    
+    return visualizer, sim, results
+
+
+def main():
+    """Main function to create visualizations from command line"""
+    import sys
+    
+    if len(sys.argv) < 2:
+        print("Usage: python view.py <config_file.json>")
+        print("Example: python view.py my_coilgun_config.json")
+        sys.exit(1)
+    
+    config_file = sys.argv[1]
+    
+    if not os.path.exists(config_file):
+        print(f"Error: Configuration file '{config_file}' not found.")
+        print("Please run 'python setup.py' first to create a configuration file.")
+        sys.exit(1)
+    
+    print("=" * 60)
+    print("COILGUN VISUALIZATION SUITE")
+    print("=" * 60)
+    print(f"Configuration file: {config_file}")
+    
+    try:
+        # Create output directory based on config filename
+        config_name = Path(config_file).stem
+        output_dir = f"visualizations_{config_name}"
+        
+        # Create complete visualization suite
+        print(f"Creating visualizations in: {output_dir}/")
+        visualizer, sim, results = create_field_visualization_suite(config_file, output_dir)
+        
+        print("\n" + "="*50)
+        print("VISUALIZATION COMPLETE")
+        print("="*50)
+        print(f"Files saved to: {output_dir}/")
+        print("- Magnetic field contour plots")
+        print("- 3D field surface plots") 
+        print("- On-axis field profiles")
+        print("- Field evolution animation")
+        print("\nCheck the output directory for all visualization files!")
+        
+    except Exception as e:
+        print(f"Visualization failed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    import os
+    main()

@@ -1,0 +1,25 @@
+{
+    "simulation_info": {
+        "config_file": "test_config.json",
+        "start_time": 1749530675.472519,
+        "end_time": 1749530685.506155,
+        "duration": 10.033636093139648,
+        "total_steps": 80685,
+        "final_velocity": -7.029881753192355e-11,
+        "efficiency": 2.2851611998042007e-25,
+        "max_current": 832.8783106000556,
+        "max_force": 1327654.3600269826,
+        "exit_reason": "Simulation time limit reached"
+    },
+    "summary": {
+        "final_velocity_ms": -7.029881753192355e-11,
+        "efficiency_percent": 2.2851611998042007e-23,
+        "final_kinetic_energy_J": 5.484386879530082e-23,
+        "projectile_mass_g": 22.195352097611888,
+        "initial_energy_J": 240.0,
+        "simulation_time_s": 10.033636093139648,
+        "exit_reason": "Simulation time limit reached",
+        "max_current_A": 832.8783106000556,
+        "max_force_N": 1327654.3600269826
+    }
+}
