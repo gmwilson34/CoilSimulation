@@ -151,11 +151,11 @@ def setup_coil_parameters(materials: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "inner_diameter": get_float_input(
             "Coil inner diameter (m)", 
-            default=0.015, min_val=0.001, max_val=0.1
+            default=0.015, min_val=0.001, max_val=0.5
         ),
         "length": get_float_input(
             "Coil length (m)", 
-            default=0.075, min_val=0.01, max_val=0.5
+            default=0.075, min_val=0.01, max_val= 15.0
         ),
         "wire_gauge_awg": int(get_choice_input(
             "Wire gauge (AWG)", 
@@ -199,11 +199,11 @@ def setup_projectile_parameters(materials: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "diameter": get_float_input(
             "Projectile diameter (m)", 
-            default=0.012, min_val=0.001, max_val=0.05
+            default=0.012, min_val=0.001, max_val=0.5
         ),
         "length": get_float_input(
             "Projectile length (m)", 
-            default=0.025, min_val=0.005, max_val=0.1
+            default=0.025, min_val=0.005, max_val=0.5
         ),
         "material": get_choice_input(
             "Projectile material", 
@@ -230,7 +230,7 @@ def setup_capacitor_parameters() -> Dict[str, Any]:
     return {
         "capacitance": get_float_input(
             "Capacitance (F)", 
-            default=0.0033, min_val=1e-6, max_val=0.1
+            default=0.0033, min_val=1e-6, max_val=1.0
         ),
         "initial_voltage": get_float_input(
             "Initial voltage (V)", 
