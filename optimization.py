@@ -5,6 +5,9 @@ This script iterates through several iterations of possible coilgun designs and 
 to optimize coilgun performance. The script will output a csv file of all valid configurations
 along with a config.json file to be used in the electromagnetic coilgun simulation.
 """
+
+# NOTE: THIS SCRIPT DOES NOT CALCULATE TOTAL VELOCITY FROM ALL STAGES YET!
+
 import json
 import numpy as np
 import csv
