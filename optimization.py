@@ -6,14 +6,12 @@ to optimize coilgun performance. The script will output a csv file of all valid 
 along with a config.json file to be used in the electromagnetic coilgun simulation.
 """
 
-# NOTE: THIS SCRIPT DOES NOT CALCULATE TOTAL VELOCITY FROM ALL STAGES YET!
-
 import json
 import numpy as np
 import csv
 import os
 from typing import Dict, Any, List, Tuple
-from solve import CoilgunSimulation  # Make sure solve.py is in your PYTHONPATH
+from solve import CoilgunSimulation, MultiStageCoilgunSimulation  # Make sure solve.py is in your PYTHONPATH
 
 # Check if tqdm is available for progress bars
 try:
@@ -161,86 +159,133 @@ def awg_to_diameter_m(wire_gauge: int, wire_spec: Dict[str, Any]) -> float:
 
 def build_config_dict(params, materials, wire_spec):
     """Build a simulation config dictionary for a given parameter set."""
+    # Handle both tuple/list and integer values for stages parameter
+    stages_param = params["stages"]
+    num_stages = stages_param[1] if isinstance(stages_param, (list, tuple)) else stages_param
+    
+    # Create base config with multi-stage settings
     config = {
+        "multi_stage": {
+            "enabled": True,
+            "num_stages": num_stages,
+            "shared_settings": ["projectile", "simulation", "circuit_model", "magnetic_model", "output"],
+            "stage_groups": [list(range(1, num_stages + 1))]  # All stages use same config during optimization
+        },
+        "stages": [],
+        "shared": {
+            "projectile": {
+                "diameter": params["projectile_diameter"],
+                "length": params["projectile_height"],
+                "material": params["projectile_material"],
+                "initial_position": params["initial_position"],
+                "initial_velocity": params["initial_velocity"]
+            },
+            "simulation": {
+                "time_span": [0, params["simulation_time"]],
+                "max_step": 1e-6,
+                "tolerance": 1e-9,
+                "method": "RK45"
+            },
+            "circuit_model": {
+                "switch_resistance": params["switch_resistance"],
+                "switch_inductance": params["switch_inductance"],
+                "parasitic_capacitance": params["parasitic_capacitance"],
+                "include_skin_effect": params["include_skin_effect"],
+                "include_proximity_effect": params["include_proximity_effect"]
+            },
+            "magnetic_model": {
+                "calculation_method": params["calculation_method"],
+                "axial_discretization": params["axial_discretization"],
+                "radial_discretization": params["radial_discretization"],
+                "include_saturation": params["include_saturation"],
+                "include_hysteresis": params["include_hysteresis"]
+            },
+            "output": {
+                "save_trajectory": True,
+                "save_current_profile": True,
+                "save_field_data": False,
+                "print_progress": False,
+                "save_interval": 100
+            }
+        }
+    }
+    
+    # Create stage-specific configurations
+    base_stage_config = {
         "coil": {
             "inner_diameter": params["projectile_diameter"] * 1.05,
             "length": params["projectile_height"],
             "wire_gauge_awg": params["wire_gauge"],
             "num_layers": params["layers"],
+            "turns_per_layer": params["turns_per_layer"],
             "wire_material": params["wire_material"],
             "insulation_thickness": params["insulation_thickness"],
-            "packing_factor": params["packing_factor"]
-        },
-        "projectile": {
-            "diameter": params["projectile_diameter"],
-            "length": params["projectile_height"],
-            "material": params["projectile_material"],
-            "initial_position": params["initial_position"],
-            "initial_velocity": params["initial_velocity"]
+            "packing_factor": params["packing_factor"],
+            "min_temperature": 20,
+            "max_temperature": 80
         },
         "capacitor": {
             "capacitance": params["capacitance"],
             "initial_voltage": params["voltage"],
             "esr": 0.01,
             "esl": 5e-8
-        },
-        "simulation": {
-            "time_span": [0, params["simulation_time"]],
-            "max_step": 1e-6,
-            "tolerance": 1e-9,
-            "method": "RK45"
-        },
-        "circuit_model": {
-            "switch_resistance": params["switch_resistance"],
-            "switch_inductance": params["switch_inductance"],
-            "parasitic_capacitance": params["parasitic_capacitance"],
-            "include_skin_effect": params["include_skin_effect"],
-            "include_proximity_effect": params["include_proximity_effect"]
-        },
-        "magnetic_model": {
-            "calculation_method": params["calculation_method"],
-            "axial_discretization": params["axial_discretization"],
-            "radial_discretization": params["radial_discretization"],
-            "include_saturation": params["include_saturation"],
-            "include_hysteresis": params["include_hysteresis"]
-        },
-        "output": {
-            "save_trajectory": False,
-            "save_current_profile": False,
-            "save_field_data": False,
-            "print_progress": False,
-            "save_interval": 100
         }
     }
+    
+    # Add configurations for each stage
+    for stage_num in range(1, num_stages + 1):
+        stage_config = {
+            "stage_id": stage_num,
+            "group_id": "group_1"  # All stages in same group during optimization
+        }
+        stage_config.update(base_stage_config)
+        config["stages"].append(stage_config)
+    
     return config
 
 
 def simulate_and_score(params, materials, wire_spec, target_velocity):
     """
-    Run a full simulation for the given parameters and return performance metrics.
+    Run a full multi-stage simulation for the given parameters and return performance metrics.
     """
     config = build_config_dict(params, materials, wire_spec)
     temp_config_file = "temp_sim_config.json"
     try:
         with open(temp_config_file, "w") as f:
             json.dump(config, f, indent=4)
-        sim = CoilgunSimulation(temp_config_file)
-        results = sim.run_simulation(save_data=False, verbose=False)
-        velocity = results.get('final_velocity', results.get('final_velocity_ms', 0))
-        resistance = getattr(sim.physics, 'coil_resistance', None)
-        inductance = getattr(sim.physics, 'coil_inductance', None)
-        max_current = results.get('max_current', results.get('max_current_A', None))
+        sim = MultiStageCoilgunSimulation(temp_config_file)
+        results = sim.run_simulation(save_data=False, verbose=False, show_progress=False)
+          # Extract the key metrics from results
+        final_velocity = float(results.get('final_velocity_ms', 0))
+        max_current = float(results.get('max_current_A', 0))
+        max_force = float(results.get('max_force_N', 0))
+        overall_efficiency = float(results.get('overall_efficiency_percent', 0))
+        
         score = (params["voltage"] + params["capacitance"] * 1000 +
-                 (resistance or 0) * 100 + (inductance or 0) * 100)
-        valid = velocity >= target_velocity
+                config["stages"][0]["coil"]["num_layers"] * 100 + max_current * 0.1)
+        
+        valid = final_velocity >= target_velocity
+        
+        # Process stage-specific results
+        stage_data = []
+        stage_velocities = results.get('stage_final_velocities_ms', [])
+        stage_efficiencies = results.get('stage_efficiencies_percent', [])
+        
+        for i, (vel, eff) in enumerate(zip(stage_velocities, stage_efficiencies)):
+            stage_data.append({
+                "stage": i + 1,
+                "velocity": float(vel),
+                "efficiency": float(eff)
+            })
+        
         return {
-            "velocity": velocity,
-            "resistance": resistance,
-            "inductance": inductance,
+            "velocity": final_velocity,
             "max_current": max_current,
+            "max_force": max_force,
+            "efficiency": overall_efficiency,
             "score": score,
             "valid": valid,
-            "results": results,
+            "stage_results": stage_data,
             "params": params.copy()
         }
     except Exception as e:
@@ -298,12 +343,21 @@ def optimize_coilgun(params, materials, wire_spec, target_velocity, total_combin
                                 "voltage": voltage,
                                 "capacitance": capacitance
                             })
+                            
                             sim_result = simulate_and_score(candidate, materials, wire_spec, target_velocity)
                             if sim_result["valid"]:
-                                results_list.append({**candidate, **sim_result["results"]})
+                                # Store only the simulation metrics, not the raw results
+                                sim_metrics = {
+                                    "velocity": sim_result["velocity"],
+                                    "max_current": sim_result["max_current"],
+                                    "max_force": sim_result["max_force"],
+                                    "efficiency": sim_result["efficiency"],
+                                    "stage_results": sim_result["stage_results"]
+                                }
+                                results_list.append({**candidate, **sim_metrics})
                                 if sim_result["score"] < best_score:
                                     best_score = sim_result["score"]
-                                    best_config = {**candidate, **sim_result["results"]}
+                                    best_config = sim_result
                             if TQDM_AVAILABLE:
                                 pbar.update(1)
                             else:
@@ -449,58 +503,81 @@ def main():
     }
     best_config, results_list = optimize_coilgun(params, materials, wire_spec, target_velocity, total_combinations)
     
-    if best_config:
+    if best_config and "params" in best_config:  # Make sure we have valid params
         # Convert to simulation config format
-        config_dict = build_config_dict(best_config, materials, wire_spec)
+        config_dict = build_config_dict(best_config["params"], materials, wire_spec)
         best_config_filename = "best_coilgun_config.json"
         with open(best_config_filename, 'w') as f:
             json.dump(config_dict, f, indent=4)
-        print(f"\nBest configuration saved to: {best_config_filename}")
+            print(f"\nBest configuration saved to: {best_config_filename}")
         
         print("\n" + "="*50)
-        print("COILGUN CONFIGURATION SUMMARY")
+        print("MULTI-STAGE COILGUN CONFIGURATION SUMMARY")
         print("="*50)
         
-        print("\n=== Coil Parameters ===")
-        print(f"Inner diameter: {config_dict['coil']['inner_diameter']*1000:.1f} mm")
-        print(f"Length: {config_dict['coil']['length']*1000:.1f} mm")
-        print(f"Wire gauge: {config_dict['coil']['wire_gauge_awg']} AWG")
-        print(f"Number of layers: {config_dict['coil']['num_layers']}")
-        print(f"Material: {config_dict['coil']['wire_material']}")
-        print(f"Insulation thickness: {config_dict['coil']['insulation_thickness']*1000:.3f} mm")
-        print(f"Packing factor: {config_dict['coil']['packing_factor']:.2f}")
+        # Print shared parameters first
+        print("\n=== Shared Parameters ===")
+        print("\n--- Projectile Parameters ---")
+        projectile = config_dict['shared']['projectile']
+        print(f"Diameter: {projectile['diameter']*1000:.1f} mm")
+        print(f"Length: {projectile['length']*1000:.1f} mm")
+        print(f"Material: {projectile['material']}")
+        print(f"Initial position: {projectile['initial_position']*1000:.1f} mm")
+        print(f"Initial velocity: {projectile['initial_velocity']:.1f} m/s")
         
-        print("\n=== Projectile Parameters ===")
-        print(f"Diameter: {config_dict['projectile']['diameter']*1000:.1f} mm")
-        print(f"Length: {config_dict['projectile']['length']*1000:.1f} mm")
-        print(f"Material: {config_dict['projectile']['material']}")
-        print(f"Initial position: {config_dict['projectile']['initial_position']*1000:.1f} mm")
-        print(f"Initial velocity: {config_dict['projectile']['initial_velocity']:.1f} m/s")
+        print("\n--- Circuit Model Parameters ---")
+        circuit = config_dict['shared']['circuit_model']
+        print(f"Switch resistance: {circuit['switch_resistance']:.3f} Ω")
+        print(f"Switch inductance: {circuit['switch_inductance']*1e9:.1f} nH")
+        print(f"Parasitic capacitance: {circuit['parasitic_capacitance']*1e12:.1f} pF")
+        print(f"Include skin effect: {'Yes' if circuit['include_skin_effect'] else 'No'}")
+        print(f"Include proximity effect: {'Yes' if circuit['include_proximity_effect'] else 'No'}")
         
-        print("\n=== Capacitor Parameters ===")
-        print(f"Capacitance: {config_dict['capacitor']['capacitance']*1000:.1f} mF")
-        print(f"Initial voltage: {config_dict['capacitor']['initial_voltage']:.0f} V")
-        print(f"ESR: {config_dict['capacitor']['esr']:.3f} Ω")
-        print(f"ESL: {config_dict['capacitor']['esl']*1e9:.1f} nH")
+        print("\n--- Magnetic Model Parameters ---")
+        magnetic = config_dict['shared']['magnetic_model']
+        print(f"Calculation method: {magnetic['calculation_method']}")
+        print(f"Axial discretization: {magnetic['axial_discretization']}")
+        print(f"Radial discretization: {magnetic['radial_discretization']}")
+        print(f"Include saturation: {'Yes' if magnetic['include_saturation'] else 'No'}")
+        print(f"Include hysteresis: {'Yes' if magnetic['include_hysteresis'] else 'No'}")
+
+        # Print common stage configuration
+        print(f"\n=== Stage Configuration (identical for all {len(config_dict['stages'])} stages) ===")
+        stage = config_dict['stages'][0]  # Use first stage since all are identical
+        print("\n--- Coil Parameters ---")
+        print(f"Inner diameter: {stage['coil']['inner_diameter']*1000:.1f} mm")
+        print(f"Length: {stage['coil']['length']*1000:.1f} mm")
+        print(f"Wire gauge: {stage['coil']['wire_gauge_awg']} AWG")
+        print(f"Number of layers: {stage['coil']['num_layers']}")
+        print(f"Turns per layer: {stage['coil'].get('turns_per_layer', best_config['params'].get('turns_per_layer', 'N/A'))}")
+        print(f"Material: {stage['coil']['wire_material']}")
+        print(f"Insulation thickness: {stage['coil']['insulation_thickness']*1000:.3f} mm")
+        print(f"Packing factor: {stage['coil']['packing_factor']:.2f}")
         
-        print("\n=== Circuit Model Parameters ===")
-        print(f"Switch resistance: {config_dict['circuit_model']['switch_resistance']:.3f} Ω")
-        print(f"Switch inductance: {config_dict['circuit_model']['switch_inductance']*1e9:.1f} nH")
-        print(f"Parasitic capacitance: {config_dict['circuit_model']['parasitic_capacitance']*1e12:.1f} pF")
-        print(f"Include skin effect: {'Yes' if config_dict['circuit_model']['include_skin_effect'] else 'No'}")
-        print(f"Include proximity effect: {'Yes' if config_dict['circuit_model']['include_proximity_effect'] else 'No'}")
+        print("\n--- Capacitor Parameters ---")
+        print(f"Capacitance: {stage['capacitor']['capacitance']*1000:.1f} mF")
+        print(f"Initial voltage: {stage['capacitor']['initial_voltage']:.0f} V")
+        print(f"ESR: {stage['capacitor']['esr']:.3f} Ω")
+        print(f"ESL: {stage['capacitor']['esl']*1e9:.1f} nH")
         
-        print("\n=== Magnetic Model Parameters ===")
-        print(f"Calculation method: {config_dict['magnetic_model']['calculation_method']}")
-        print(f"Axial discretization: {config_dict['magnetic_model']['axial_discretization']}")
-        print(f"Radial discretization: {config_dict['magnetic_model']['radial_discretization']}")
-        print(f"Include saturation: {'Yes' if config_dict['magnetic_model']['include_saturation'] else 'No'}")
-        print(f"Include hysteresis: {'Yes' if config_dict['magnetic_model']['include_hysteresis'] else 'No'}")
-        
-        print("\n=== Results ===")
+        # Print per-stage velocity and efficiency results
+        if 'stage_results' in best_config:
+            print("\n--- Per-Stage Performance ---")
+            for i, stage_data in enumerate(best_config['stage_results'], 1):
+                print(f"Stage {i}: {stage_data['velocity']:.1f} m/s, {stage_data['efficiency']:.1f}% efficiency")
+          # Circuit and Magnetic model parameters are already shown in Shared Parameters section
+
+        print("\n=== Overall Performance ===")
         print(f"Final velocity: {best_config.get('velocity', 0):.1f} m/s")
-        if 'max_current' in best_config:
-            print(f"Maximum current: {best_config['max_current']:.1f} A")
+        print(f"Overall efficiency: {best_config.get('efficiency', 0)*100:.1f}%")
+        print(f"Maximum current: {best_config.get('max_current', 0):.1f} A")
+        print(f"Maximum force: {best_config.get('max_force', 0):.1f} N")
+        
+        print("\nVelocity progression:")
+        if 'stage_results' in best_config:
+            print(f"Initial: {config_dict['shared']['projectile']['initial_velocity']:.1f} m/s")
+            for stage_data in best_config['stage_results']:
+                print(f"After stage {stage_data['stage']}: {stage_data['velocity']:.1f} m/s")
         
         # Save all valid configurations to CSV
         if results_list:
