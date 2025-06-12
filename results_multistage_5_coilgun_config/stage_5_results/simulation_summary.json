@@ -1,0 +1,25 @@
+{
+    "simulation_info": {
+        "config_file": "temp_stage_5_config.json",
+        "start_time": 1749742057.064589,
+        "end_time": 1749742057.280309,
+        "duration": 0.21571993827819824,
+        "total_steps": 1222,
+        "final_velocity": 112.69322156546593,
+        "efficiency": 0.16214303276053688,
+        "max_current": 3279.2837436717145,
+        "max_force": 28266.967068760783,
+        "exit_reason": "Projectile reached coil center"
+    },
+    "summary": {
+        "final_velocity_ms": 112.69322156546593,
+        "efficiency_percent": 16.214303276053688,
+        "final_kinetic_energy_J": 10133.939547533555,
+        "projectile_mass_g": 1595.925876165479,
+        "initial_energy_J": 62500.0,
+        "simulation_time_s": 0.21571993827819824,
+        "exit_reason": "Projectile reached coil center",
+        "max_current_A": 3279.2837436717145,
+        "max_force_N": 28266.967068760783
+    }
+}

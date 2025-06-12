@@ -1,0 +1,64 @@
+{
+    "coil": {
+        "inner_diameter": 0.055,
+        "length": 0.1,
+        "wire_gauge_awg": 10,
+        "num_layers": 6,
+        "wire_material": "Copper",
+        "insulation_thickness": 5e-05,
+        "packing_factor": 0.95
+    },
+    "capacitor": {
+        "capacitance": 0.5,
+        "initial_voltage": 360.0,
+        "esr": 0.01,
+        "esl": 5e-08
+    },
+    "simulation": {
+        "time_span": [
+            0,
+            0.04
+        ],
+        "max_step": 1e-06,
+        "tolerance": 1e-09,
+        "method": "RK45"
+    },
+    "circuit_model": {
+        "switch_resistance": 0.001,
+        "switch_inductance": 1e-08,
+        "parasitic_capacitance": 1e-11,
+        "include_skin_effect": false,
+        "include_proximity_effect": false
+    },
+    "magnetic_model": {
+        "calculation_method": "biot_savart",
+        "axial_discretization": 1000,
+        "radial_discretization": 1000,
+        "include_saturation": false,
+        "include_hysteresis": false
+    },
+    "output": {
+        "save_trajectory": true,
+        "save_current_profile": true,
+        "save_field_data": true,
+        "print_progress": true,
+        "save_interval": 100
+    },
+    "projectile": {
+        "diameter": 0.0508,
+        "length": 0.1,
+        "material": "Pure_Iron",
+        "initial_position": -0.1,
+        "initial_velocity": 0.0
+    },
+    "timing_optimization": {
+        "enabled": true,
+        "pre_charge": true,
+        "optimal_force_timing": true,
+        "charge_time_factor": 3.0,
+        "optimal_force_position": 0.3,
+        "turn_off_position": 0.7,
+        "gradual_turn_on": false,
+        "turn_on_duration": 0.001
+    }
+}
