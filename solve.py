@@ -31,27 +31,37 @@ from equations import CoilgunPhysicsEngine
 
 class ProgressTracker:
     """
-    Progress tracking class for ODE integration with terminal progress bar.
+    Enhanced progress tracking class with physics diagnostics.
     """
     
-    def __init__(self, t_span, update_interval=0.1):
+    def __init__(self, t_span, update_interval=0.1, physics_engine=None):
         """
-        Initialize progress tracker.
+        Initialize enhanced progress tracker.
         
         Args:
             t_span: Time span tuple (t_start, t_end)
             update_interval: Update interval in seconds
+            physics_engine: Physics engine for diagnostics
         """
         self.t_start, self.t_end = t_span
         self.t_duration = self.t_end - self.t_start
         self.update_interval = update_interval
+        self.physics = physics_engine
         
         # Progress tracking
         self.current_time = self.t_start
+        self.current_state = None
         self.step_count = 0
         self.start_real_time = time.time()
         self.last_update_time = self.start_real_time
         self.last_step_count = 0
+        
+        # Physics diagnostics
+        self.max_current = 0
+        self.max_force = 0
+        self.max_velocity = 0
+        self.current_position = 0
+        self.physics_warnings = []
         
         # Progress bar settings
         self.bar_width = 50
@@ -63,14 +73,31 @@ class ProgressTracker:
     
     def update(self, t, y):
         """
-        Update progress tracking (called from ODE function wrapper).
+        Enhanced update with physics diagnostics.
         
         Args:
             t: Current time
-            y: Current state vector
+            y: Current state vector [Q, I, x, v]
         """
         self.current_time = t
+        self.current_state = y
         self.step_count += 1
+        
+        # Update physics diagnostics
+        if len(y) >= 4:
+            Q, I, x, v = y
+            self.max_current = max(self.max_current, abs(I))
+            self.max_velocity = max(self.max_velocity, abs(v))
+            self.current_position = x
+            
+            # Calculate current force for diagnostics
+            if self.physics and abs(I) > 1e-6:
+                try:
+                    force = self.physics.magnetic_force_with_circuit_logic(I, x, t, v)
+                    self.max_force = max(self.max_force, abs(force))
+                except Exception as e:
+                    if len(self.physics_warnings) < 5:  # Limit warnings
+                        self.physics_warnings.append(f"Force calculation warning at t={t:.2e}s: {str(e)[:50]}")
     
     def _display_loop(self):
         """Display progress bar in a separate thread."""
@@ -79,7 +106,7 @@ class ProgressTracker:
             time.sleep(self.update_interval)
     
     def _draw_progress_bar(self):
-        """Draw the progress bar to terminal."""
+        """Draw enhanced progress bar with physics diagnostics."""
         # Calculate progress percentage
         if self.t_duration > 0:
             progress = min(1.0, (self.current_time - self.t_start) / self.t_duration)
@@ -96,7 +123,6 @@ class ProgressTracker:
             self.last_update_time = current_real_time
             self.last_step_count = self.step_count
         else:
-            # Use previous rate or estimate
             total_elapsed = current_real_time - self.start_real_time
             integration_rate = self.step_count / total_elapsed if total_elapsed > 0 else 0
         
@@ -104,7 +130,7 @@ class ProgressTracker:
         filled = int(self.bar_width * progress)
         bar = '█' * filled + '░' * (self.bar_width - filled)
         
-        # Format simulation time in appropriate units
+        # Format time
         if self.current_time < 1e-3:
             time_str = f"{self.current_time*1e6:.1f}μs"
         elif self.current_time < 1:
@@ -119,13 +145,23 @@ class ProgressTracker:
         else:
             total_time_str = f"{self.t_end:.3f}s"
         
-        # Create progress line
-        progress_line = (f"\rIntegration Progress: [{bar}] {progress*100:6.2f}% | "
+        # Physics status indicators
+        physics_status = ""
+        if self.current_state is not None and len(self.current_state) >= 4:
+            I, x, v = self.current_state[1], self.current_state[2], self.current_state[3]
+            physics_status = f" | I:{I:.0f}A | x:{x*1000:.1f}mm | v:{v:.1f}m/s"
+        
+        # Create enhanced progress line
+        progress_line = (f"\rSimulation: [{bar}] {progress*100:6.2f}% | "
                         f"Time: {time_str}/{total_time_str} | "
                         f"Steps: {self.step_count:,} | "
-                        f"Rate: {integration_rate:.0f} steps/s")
+                        f"Rate: {integration_rate:.0f}/s{physics_status}")
         
-        # Write to terminal (overwrite previous line)
+        # Truncate if too long for terminal
+        if len(progress_line) > 120:
+            progress_line = progress_line[:117] + "..."
+        
+        # Write to terminal
         sys.stdout.write(progress_line)
         sys.stdout.flush()
     
@@ -135,8 +171,14 @@ class ProgressTracker:
         if self.display_thread.is_alive():
             self.display_thread.join(timeout=0.5)
         
-        # Clear the progress line and move to next line
+        # Clear the progress line and show final summary
         sys.stdout.write('\r' + ' ' * 120 + '\r')
+        
+        if self.physics_warnings:
+            print(f"Physics warnings encountered: {len(self.physics_warnings)}")
+            for warning in self.physics_warnings[:3]:  # Show first 3
+                print(f"  ⚠  {warning}")
+        
         sys.stdout.flush()
 
 class CoilgunSimulation:
@@ -165,16 +207,49 @@ class CoilgunSimulation:
         
         # Initialize results storage
         self.results = {
+            # Basic state variables
             'time': None,
             'charge': None,
             'current': None,
             'position': None,
             'velocity': None,
-            'force': None,
+            
+            # Enhanced electromagnetic analysis
+            'force_total': None,
+            'force_gradient': None,
+            'force_reluctance': None,
+            'force_lorentz': None,
+            'force_maxwell': None,
+            'force_eddy': None,
             'inductance': None,
-            'power': None,
+            'inductance_gradient': None,
+            
+            # Power and energy analysis
+            'power_electrical': None,
+            'power_mechanical': None,
+            'power_loss_resistive': None,
+            'power_loss_eddy': None,
             'energy_capacitor': None,
-            'energy_kinetic': None
+            'energy_kinetic': None,
+            'energy_magnetic': None,
+            
+            # Advanced physics
+            'magnetic_field': None,
+            'permeability_effective': None,
+            'saturation_factor': None,
+            'eddy_current_magnitude': None,
+            'skin_depth': None,
+            'frequency_content': None,
+            'temperature_rise': None,
+            
+            # Physics validation
+            'field_accuracy': None,
+            'force_consistency': None,
+            'energy_conservation': None,
+            
+            # Backward compatibility
+            'force': None,  # Alias for force_total
+            'power': None   # Alias for power_electrical
         }
         
         # Simulation metadata
@@ -239,9 +314,9 @@ class CoilgunSimulation:
         tolerance = sim_config.get('tolerance', 1e-9)
         method = sim_config.get('method', 'RK45')
         
-        # Initialize progress tracker if requested
+        # Initialize enhanced progress tracker
         if show_progress and verbose:
-            self.progress_tracker = ProgressTracker(t_span)
+            self.progress_tracker = ProgressTracker(t_span, physics_engine=self.physics)
             if verbose:
                 print(f"Progress tracking enabled. Integration method: {method}")
         
@@ -323,7 +398,7 @@ class CoilgunSimulation:
             
             if save_data and self.results['current'] is not None:
                 self.simulation_info['max_current'] = np.max(np.abs(self.results['current']))
-                self.simulation_info['max_force'] = np.max(np.abs(self.results['force']))
+                self.simulation_info['max_force'] = np.max(np.abs(self.results['force_total']))
             else:
                 # Calculate max values from the solution data even if not saving detailed results
                 if hasattr(solution, 'y') and solution.y.shape[1] > 0:
@@ -356,7 +431,7 @@ class CoilgunSimulation:
                 self.progress_tracker.stop()
                 if verbose and show_progress:
                     print("Integration completed.")
-    
+
     def _process_results(self, solution, save_data):
         """
         Process and store simulation results.
@@ -387,19 +462,98 @@ class CoilgunSimulation:
             self.physics.get_inductance(pos) for pos in self.results['position']
         ])
         
-        self.results['force'] = np.array([
+        self.results['force_total'] = np.array([
             self.physics.magnetic_force_with_circuit_logic(I, x, current_time) 
             for I, x, current_time in zip(self.results['current'], self.results['position'], self.results['time'])
         ])
         
         # Power and energy analysis
-        self.results['power'] = self.results['current'] * self.results['charge'] / self.physics.capacitance
+        self.results['power_electrical'] = self.results['current'] * self.results['charge'] / self.physics.capacitance
         
         self.results['energy_capacitor'] = 0.5 * self.results['charge']**2 / self.physics.capacitance
         
         self.results['energy_kinetic'] = (0.5 * self.physics.proj_mass * 
                                          self.results['velocity']**2)
-    
+        
+        # Enhanced physics analysis (with backward compatibility)
+        try:
+            # Force decomposition analysis if available
+            if hasattr(self.physics, 'force_analysis'):
+                force_components = []
+                for I, x, v, t in zip(self.results['current'], self.results['position'], 
+                                    self.results['velocity'], self.results['time']):
+                    # Calculate force to get components stored in force_analysis
+                    self.physics.magnetic_force_ferromagnetic(I, x, v)
+                    force_components.append(self.physics.force_analysis.copy())
+                
+                # Extract force components
+                self.results['force_gradient'] = np.array([fc.get('force_gradient', 0) for fc in force_components])
+                self.results['force_reluctance'] = np.array([fc.get('force_reluctance', 0) for fc in force_components])
+                self.results['force_lorentz'] = np.array([fc.get('force_lorentz', 0) for fc in force_components])
+                self.results['force_maxwell'] = np.array([fc.get('force_maxwell', 0) for fc in force_components])
+                self.results['force_eddy'] = np.array([fc.get('force_eddy', 0) for fc in force_components])
+                self.results['power_loss_eddy'] = np.array([fc.get('power_loss_eddy', 0) for fc in force_components])
+            
+            # Advanced physics if enhanced methods available
+            if hasattr(self.physics, 'calculate_eddy_current_effects'):
+                eddy_effects = []
+                for I, x, v in zip(self.results['current'], self.results['position'], self.results['velocity']):
+                    if abs(I) > 1e-6 and abs(v) > 1e-6:
+                        effects = self.physics.calculate_eddy_current_effects(I, v, x)
+                        eddy_effects.append(effects)
+                    else:
+                        eddy_effects.append({'skin_depth': np.inf, 'induced_current': 0, 'opposing_force': 0})
+                
+                self.results['skin_depth'] = np.array([ef.get('skin_depth', np.inf) for ef in eddy_effects])
+                self.results['eddy_current_magnitude'] = np.array([ef.get('induced_current', 0) for ef in eddy_effects])
+                
+            # Magnetic field analysis
+            self.results['magnetic_field'] = np.array([
+                self.physics.magnetic_field_solenoid_on_axis(pos, I) 
+                for pos, I in zip(self.results['position'], self.results['current'])
+            ])
+            
+            # Inductance gradient
+            self.results['inductance_gradient'] = np.array([
+                self.physics.get_inductance_gradient(pos) for pos in self.results['position']
+            ])
+            
+            # Power decomposition
+            self.results['power_mechanical'] = self.results['force_total'] * self.results['velocity']
+            self.results['power_loss_resistive'] = self.results['current']**2 * self.physics.total_resistance
+            
+            # Magnetic energy
+            self.results['energy_magnetic'] = 0.5 * self.results['inductance'] * self.results['current']**2
+            
+            # Physics validation if available
+            if hasattr(self.physics, 'calculate_field_with_error_estimate'):
+                field_validation = []
+                for pos, I in zip(self.results['position'][:10], self.results['current'][:10]):  # Sample first 10 points
+                    if abs(I) > 1e-6:
+                        validation = self.physics.calculate_field_with_error_estimate(pos, I)
+                        field_validation.append(validation.get('relative_error_estimate', 0))
+                    else:
+                        field_validation.append(0)
+                self.results['field_accuracy'] = np.mean(field_validation) if field_validation else 0
+            
+        except Exception as e:
+            print(f"Warning: Enhanced physics analysis failed: {e}")
+            # Provide fallback values
+            self.results['force_gradient'] = np.zeros_like(self.results['force_total'])
+            self.results['force_reluctance'] = np.zeros_like(self.results['force_total'])
+            self.results['force_lorentz'] = np.zeros_like(self.results['force_total'])
+            self.results['force_maxwell'] = np.zeros_like(self.results['force_total'])
+            self.results['force_eddy'] = np.zeros_like(self.results['force_total'])
+            self.results['skin_depth'] = np.full_like(self.results['force_total'], np.inf)
+            self.results['eddy_current_magnitude'] = np.zeros_like(self.results['force_total'])
+            self.results['power_mechanical'] = self.results['force_total'] * self.results['velocity']
+            self.results['power_loss_resistive'] = self.results['current']**2 * self.physics.total_resistance
+            self.results['energy_magnetic'] = 0.5 * self.results['inductance'] * self.results['current']**2
+        
+        # Set backward compatibility aliases
+        self.results['force'] = self.results['force_total']
+        self.results['power'] = self.results['power_electrical']
+        
     def _print_results(self):
         """Print comprehensive simulation results."""
         print("\n" + "=" * 60)
@@ -423,8 +577,8 @@ class CoilgunSimulation:
             print(f"  Maximum force: {max_force:.1f} N")
             
             # Calculate peak power
-            if self.results['power'] is not None:
-                max_power = np.max(self.results['power'])
+            if self.results['power_electrical'] is not None:
+                max_power = np.max(self.results['power_electrical'])
                 print(f"  Peak power: {max_power:.0f} W")
         
         # Energy analysis
@@ -517,9 +671,9 @@ class CoilgunSimulation:
                 'current_A': self.results['current'],
                 'position_m': self.results['position'],
                 'velocity_ms': self.results['velocity'],
-                'force_N': self.results['force'],
+                'force_N': self.results['force_total'],
                 'inductance_H': self.results['inductance'],
-                'power_W': self.results['power'],
+                'power_W': self.results['power_electrical'],
                 'energy_capacitor_J': self.results['energy_capacitor'],
                 'energy_kinetic_J': self.results['energy_kinetic']
             }
@@ -585,7 +739,7 @@ class CoilgunSimulation:
         axes[1, 0].grid(True, alpha=0.3)
         
         # Force vs time
-        axes[1, 1].plot(t, self.results['force'], 'm-', linewidth=2)
+        axes[1, 1].plot(t, self.results['force_total'], 'm-', linewidth=2)
         axes[1, 1].set_xlabel('Time (ms)')
         axes[1, 1].set_ylabel('Force (N)')
         axes[1, 1].set_title('Magnetic Force')
@@ -835,9 +989,9 @@ class MultiStageCoilgunSimulation:
                         self.aggregated_results['current'].extend(stage_sim.results['current'])
                         self.aggregated_results['position'].extend(stage_sim.results['position'])
                         self.aggregated_results['velocity'].extend(stage_sim.results['velocity'])
-                        self.aggregated_results['force'].extend(stage_sim.results['force'])
+                        self.aggregated_results['force'].extend(stage_sim.results['force_total'])
                         self.aggregated_results['inductance'].extend(stage_sim.results['inductance'])
-                        self.aggregated_results['power'].extend(stage_sim.results['power'])
+                        self.aggregated_results['power'].extend(stage_sim.results['power_electrical'])
                         self.aggregated_results['energy_capacitor'].extend(stage_sim.results['energy_capacitor'])
                         self.aggregated_results['energy_kinetic'].extend(stage_sim.results['energy_kinetic'])
                         
