@@ -11,12 +11,14 @@ Key features:
 - Ferromagnetic force calculation via inductance gradient
 - 2D axisymmetric field calculations
 - Material-dependent electromagnetic properties
+- Multi-stage timing optimization
 """
 
 import numpy as np
 import scipy.special as sp
 from scipy.interpolate import interp1d
 from scipy.integrate import quad
+from scipy.optimize import minimize_scalar
 import json
 import warnings
 import os
@@ -50,6 +52,101 @@ class CoilgunPhysicsEngine:
         
         # Precompute inductance lookup table for efficiency
         self._precompute_inductance_table()
+        
+        # Initialize timing optimization parameters
+        self._initialize_timing_optimization()
+    
+    def _initialize_timing_optimization(self):
+        """
+        Initialize timing optimization parameters for multi-stage operation.
+        """
+        # Timing optimization parameters
+        self.timing_config = self.config.get('timing_optimization', {})
+        self.enable_timing_optimization = self.timing_config.get('enabled', True)
+        self.pre_charge_enabled = self.timing_config.get('pre_charge', True)
+        self.optimal_force_timing = self.timing_config.get('optimal_force_timing', True)
+        
+        # Projectile velocity from previous stage (for multi-stage)
+        self.previous_stage_velocity = self.initial_velocity
+        
+        # Timing calculation parameters
+        self.coil_charge_time_factor = self.timing_config.get('charge_time_factor', 3.0)  # Multiples of L/R
+        self.optimal_force_position = self.timing_config.get('optimal_force_position', 0.3)  # Fraction of coil length
+        self.turn_off_position = self.timing_config.get('turn_off_position', 0.7)  # Fraction of coil length
+        
+        # Pre-charge timing
+        self.pre_charge_start_time = 0.0
+        self.coil_switch_on_time = 0.0
+        self.coil_switch_off_time = np.inf
+        
+        # Compute timing if this is a subsequent stage
+        if self.previous_stage_velocity > 0:
+            self._compute_optimal_timing()
+    
+    def set_previous_stage_velocity(self, velocity):
+        """
+        Set the velocity from the previous stage for timing optimization.
+        
+        Args:
+            velocity: Final velocity from previous stage (m/s)
+        """
+        self.previous_stage_velocity = velocity
+        if self.enable_timing_optimization and velocity > 0:
+            self._compute_optimal_timing()
+    
+    def _compute_optimal_timing(self):
+        """
+        Compute optimal timing for coil activation based on projectile velocity.
+        """
+        if not self.enable_timing_optimization or self.previous_stage_velocity <= 0:
+            return
+        
+        # Calculate L/R time constant for current buildup
+        max_inductance = max(self.inductance_values)
+        time_constant = max_inductance / self.total_resistance
+        
+        # Time needed for current to reach useful levels
+        charge_time_needed = self.coil_charge_time_factor * time_constant
+        
+        # Distance from initial position to optimal force position
+        optimal_position = self.optimal_force_position * self.coil_length
+        travel_distance = optimal_position - self.initial_position
+        
+        # Time for projectile to reach optimal position
+        if self.previous_stage_velocity > 0:
+            travel_time = travel_distance / self.previous_stage_velocity
+        else:
+            travel_time = np.inf
+        
+        # Pre-charge timing: start charging before projectile arrives
+        if self.pre_charge_enabled and travel_time > charge_time_needed:
+            self.pre_charge_start_time = max(0, travel_time - charge_time_needed)
+            self.coil_switch_on_time = self.pre_charge_start_time
+        else:
+            # If not enough time for pre-charge, start immediately
+            self.pre_charge_start_time = 0.0
+            self.coil_switch_on_time = 0.0
+        
+        # Turn-off timing: when projectile reaches turn-off position
+        turn_off_position = self.turn_off_position * self.coil_length
+        turn_off_distance = turn_off_position - self.initial_position
+        
+        if self.previous_stage_velocity > 0:
+            self.coil_switch_off_time = turn_off_distance / self.previous_stage_velocity
+        else:
+            self.coil_switch_off_time = np.inf
+        
+        # Store timing info for diagnostics
+        self.timing_info = {
+            'time_constant': time_constant,
+            'charge_time_needed': charge_time_needed,
+            'travel_time_to_optimal': travel_time,
+            'pre_charge_start': self.pre_charge_start_time,
+            'switch_on_time': self.coil_switch_on_time,
+            'switch_off_time': self.coil_switch_off_time,
+            'optimal_position': optimal_position,
+            'turn_off_position': turn_off_position
+        }
     
     def _load_materials_data(self):
         """Load materials data from JSON file"""
@@ -402,19 +499,68 @@ class CoilgunPhysicsEngine:
         
         return force
     
-    def should_turn_off_coil(self, position, current):
+    def magnetic_force_with_circuit_logic(self, current, position, time=None):
+        """
+        Calculate magnetic force considering circuit logic (coil turn-off conditions).
+        This is the "safe" version that should be used for post-processing data.
+        
+        Args:
+            current: Current in coil (A)
+            position: Projectile position (m)
+            time: Current simulation time (optional, for timing optimization)
+            
+        Returns:
+            force: Magnetic force in Newtons, 0 if coil should be off
+        """
+        # Check if coil should be turned off based on position and current
+        voltage_multiplier = self.get_coil_driving_voltage(time) if time is not None else 1.0
+        
+        if self.should_turn_off_coil(position, current, time) or voltage_multiplier == 0.0:
+            return 0.0
+        
+        # Also check if position is way outside the reasonable range
+        # where inductance gradients become numerically unstable
+        z_min = -0.05  # 5cm before coil start
+        z_max = self.coil_length + 0.05  # 5cm after coil end
+        
+        if position < z_min or position > z_max:
+            return 0.0
+        
+        # If we're far from the coil center, apply a damping factor to prevent
+        # numerical artifacts from the inductance gradient interpolation
+        distance_from_center = abs(position - self.coil_center)
+        max_reasonable_distance = self.coil_length * 0.6  # 60% of coil length from center
+        
+        if distance_from_center > max_reasonable_distance:
+            # Apply exponential damping for positions far from optimal
+            damping_factor = np.exp(-(distance_from_center - max_reasonable_distance) / (self.coil_length * 0.1))
+            force = self.magnetic_force_ferromagnetic(current, position) * damping_factor
+        else:
+            force = self.magnetic_force_ferromagnetic(current, position)
+        
+        return force
+    
+    def should_turn_off_coil(self, position, current, time=None):
         """
         Determine if coil should be turned off to avoid suck-back.
+        Now includes timing optimization logic.
         
         Args:
             position: Current projectile position
             current: Current coil current
+            time: Current simulation time (for timing optimization)
             
         Returns:
             bool: True if coil should be turned off
         """
-        # Turn off when projectile reaches coil center
-        if position >= self.coil_center:
+        # Timing-based turn-off (if timing optimization is enabled)
+        if self.enable_timing_optimization and time is not None:
+            if time >= self.coil_switch_off_time:
+                return True
+        
+        # Position-based turn-off (enhanced with configurable position)
+        turn_off_pos = self.turn_off_position * self.coil_length
+        if position >= turn_off_pos:
             return True
         
         # Turn off if current has reversed (for SCR operation)
@@ -423,9 +569,55 @@ class CoilgunPhysicsEngine:
         
         return False
     
+    def should_turn_on_coil(self, time=None):
+        """
+        Determine if coil should be turned on based on timing optimization.
+        
+        Args:
+            time: Current simulation time
+            
+        Returns:
+            bool: True if coil should be turned on
+        """
+        if not self.enable_timing_optimization or time is None:
+            return True  # Default: always on
+        
+        return time >= self.coil_switch_on_time
+    
+    def get_coil_driving_voltage(self, time=None):
+        """
+        Get the effective driving voltage considering timing optimization.
+        
+        Args:
+            time: Current simulation time
+            
+        Returns:
+            float: Effective driving voltage multiplier (0.0 to 1.0)
+        """
+        if not self.enable_timing_optimization or time is None:
+            return 1.0  # Full voltage
+        
+        # Check if coil should be on
+        if not self.should_turn_on_coil(time):
+            return 0.0  # Coil off
+        
+        # Check if coil should be off due to timing
+        if time >= self.coil_switch_off_time:
+            return 0.0  # Coil off
+        
+        # Gradual turn-on for smooth operation (optional)
+        if self.timing_config.get('gradual_turn_on', False):
+            turn_on_duration = self.timing_config.get('turn_on_duration', 1e-3)  # 1ms default
+            if time < self.coil_switch_on_time + turn_on_duration:
+                ramp_factor = (time - self.coil_switch_on_time) / turn_on_duration
+                return max(0.0, min(1.0, ramp_factor))
+        
+        return 1.0  # Full voltage
+    
     def circuit_derivatives(self, t, state):
         """
         Calculate derivatives for the coupled electromagnetic circuit system.
+        Now includes timing optimization logic.
         
         State vector: [Q, I, x, v]
         Q: Charge on capacitor (C)
@@ -446,19 +638,22 @@ class CoilgunPhysicsEngine:
         L = self.get_inductance(x)
         dL_dx = self.get_inductance_gradient(x)
         
+        # Get timing-optimized voltage multiplier
+        voltage_multiplier = self.get_coil_driving_voltage(t)
+        
         # Check if coil should be turned off
-        if self.should_turn_off_coil(x, I):
+        if self.should_turn_off_coil(x, I, t) or voltage_multiplier == 0.0:
             # Rapidly quench current
             dI_dt = -I / 1e-6  # 1 microsecond time constant
             force = 0
         else:
-            # Circuit equation with motional EMF
+            # Circuit equation with motional EMF and timing optimization
             # Kirchhoff's voltage law: V_C - L*dI/dt - I*R - I*v*dL/dx = 0
             # Solving for dI/dt:
             # dI/dt = (V_C - I*R - I*v*dL/dx) / L
-            # where V_C = Q/C
+            # where V_C = Q/C * voltage_multiplier
             
-            V_capacitor = Q / self.capacitance
+            V_capacitor = (Q / self.capacitance) * voltage_multiplier
             motional_emf = I * v * dL_dx  # Back-EMF due to moving inductance
             resistive_drop = I * self.total_resistance
             
@@ -468,7 +663,11 @@ class CoilgunPhysicsEngine:
             force = self.magnetic_force_ferromagnetic(I, x)
         
         # Charge derivative: dQ/dt = -I (capacitor discharging)
-        dQ_dt = -I
+        # Only discharge when coil is actually drawing current
+        if voltage_multiplier > 0:
+            dQ_dt = -I
+        else:
+            dQ_dt = 0  # No discharge when coil is off
         
         # Position derivative: dx/dt = v
         dx_dt = v
@@ -486,14 +685,24 @@ class CoilgunPhysicsEngine:
     def get_initial_conditions(self):
         """
         Get initial conditions for the simulation.
+        Now includes pre-charge current if enabled.
         
         Returns:
             y0: Initial state vector [Q0, I0, x0, v0]
         """
         Q0 = self.initial_charge
-        I0 = 0.0  # No initial current (inductor property)
         x0 = self.initial_position
         v0 = self.initial_velocity
+        
+        # Initial current (may be non-zero if pre-charging)
+        I0 = 0.0
+        if (self.enable_timing_optimization and self.pre_charge_enabled and 
+            self.pre_charge_start_time == 0.0 and self.previous_stage_velocity > 0):
+            # Calculate pre-charge current based on time available
+            # This is a simplified approach - could be made more sophisticated
+            time_constant = max(self.inductance_values) / self.total_resistance
+            pre_charge_fraction = min(0.5, self.coil_charge_time_factor / 5.0)  # Conservative pre-charge
+            I0 = (self.initial_voltage / self.total_resistance) * pre_charge_fraction
         
         return [Q0, I0, x0, v0]
     
@@ -538,6 +747,19 @@ class CoilgunPhysicsEngine:
         print(f"\nSystem:")
         print(f"  Maximum inductance: {L_max*1e6:.1f} µH")
         print(f"  Inductance ratio: {L_max/self.solenoid_inductance_air_core():.1f}")
+        
+        # Print timing optimization info if available
+        if (self.enable_timing_optimization and hasattr(self, 'timing_info') and 
+            self.previous_stage_velocity > 0):
+            print(f"\nTiming Optimization:")
+            print(f"  Previous stage velocity: {self.previous_stage_velocity:.1f} m/s")
+            print(f"  L/R time constant: {self.timing_info['time_constant']*1000:.1f} ms")
+            print(f"  Charge time needed: {self.timing_info['charge_time_needed']*1000:.1f} ms")
+            print(f"  Pre-charge start: {self.timing_info['pre_charge_start']*1000:.1f} ms")
+            print(f"  Switch on time: {self.timing_info['switch_on_time']*1000:.1f} ms")
+            print(f"  Switch off time: {self.timing_info['switch_off_time']*1000:.1f} ms")
+            print(f"  Optimal force position: {self.timing_info['optimal_position']*1000:.1f} mm")
+            print(f"  Turn-off position: {self.timing_info['turn_off_position']*1000:.1f} mm")
 
 
 # Utility functions for field visualization and analysis
