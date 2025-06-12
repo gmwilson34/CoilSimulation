@@ -1,0 +1,155 @@
+{
+    "simulation_info": {
+        "config_file": "multistage_5_coilgun_config.json",
+        "num_stages": 5,
+        "start_time": 1749742054.186162,
+        "end_time": 1749742057.309589,
+        "duration": 3.123426914215088,
+        "total_steps": 21285,
+        "final_velocity": 112.69322156546593,
+        "overall_efficiency": 0.045607288692770274,
+        "stage_efficiencies": [
+            0.03178858183981891,
+            0.07150912400911126,
+            0.1091401020273002,
+            0.11078233876969557,
+            0.16214303276053688
+        ],
+        "stage_final_velocities": [
+            35.92664986928608,
+            53.884253883673885,
+            66.56919764582821,
+            93.15022602809775,
+            112.69322156546593
+        ],
+        "stage_durations": [
+            1.638166904449463,
+            0.4585738182067871,
+            0.3802988529205322,
+            0.26043105125427246,
+            0.21571993827819824
+        ],
+        "total_initial_energy": 222200.0,
+        "total_final_kinetic_energy": 10133.939547533555
+    },
+    "summary": {
+        "multi_stage": true,
+        "num_stages": 5,
+        "final_velocity_ms": 112.69322156546593,
+        "overall_efficiency_percent": 4.560728869277027,
+        "total_initial_energy_J": 222200.0,
+        "final_kinetic_energy_J": 10133.939547533555,
+        "simulation_time_s": 3.123426914215088,
+        "stage_final_velocities_ms": [
+            35.92664986928608,
+            53.884253883673885,
+            66.56919764582821,
+            93.15022602809775,
+            112.69322156546593
+        ],
+        "stage_efficiencies_percent": [
+            3.178858183981891,
+            7.1509124009111265,
+            10.91401020273002,
+            11.078233876969556,
+            16.214303276053688
+        ],
+        "stage_durations_s": [
+            1.638166904449463,
+            0.4585738182067871,
+            0.3802988529205322,
+            0.26043105125427246,
+            0.21571993827819824
+        ],
+        "projectile_mass_g": 1595.925876165479,
+        "max_current_A": 3279.2837436717145,
+        "max_force_N": 1920674.7900191792
+    },
+    "stage_results": [
+        {
+            "final_velocity_ms": 35.92664986928608,
+            "efficiency_percent": 3.178858183981891,
+            "final_kinetic_energy_J": 1029.9500516101327,
+            "projectile_mass_g": 1595.925876165479,
+            "initial_energy_J": 32400.0,
+            "simulation_time_s": 1.638166904449463,
+            "exit_reason": "Projectile reached coil center",
+            "max_current_A": 814.080765680465,
+            "max_force_N": 1920674.7900191792,
+            "stage_number": 1,
+            "stage_duration": 1.638166904449463,
+            "stage_efficiency": 0.03178858183981891,
+            "final_velocity": 35.92664986928608,
+            "max_current": 814.080765680465,
+            "max_force": 1920674.7900191792
+        },
+        {
+            "final_velocity_ms": 53.884253883673885,
+            "efficiency_percent": 7.1509124009111265,
+            "final_kinetic_energy_J": 2316.895617895205,
+            "projectile_mass_g": 1595.925876165479,
+            "initial_energy_J": 32400.0,
+            "simulation_time_s": 0.4585738182067871,
+            "exit_reason": "Projectile reached coil center",
+            "max_current_A": 1118.8977009621103,
+            "max_force_N": 1861918.3596712952,
+            "stage_number": 2,
+            "stage_duration": 0.4585738182067871,
+            "stage_efficiency": 0.07150912400911126,
+            "final_velocity": 53.884253883673885,
+            "max_current": 1118.8977009621103,
+            "max_force": 1861918.3596712952
+        },
+        {
+            "final_velocity_ms": 66.56919764582821,
+            "efficiency_percent": 10.91401020273002,
+            "final_kinetic_energy_J": 3536.139305684527,
+            "projectile_mass_g": 1595.925876165479,
+            "initial_energy_J": 32400.0,
+            "simulation_time_s": 0.3802988529205322,
+            "exit_reason": "Projectile reached coil center",
+            "max_current_A": 1118.8977009621103,
+            "max_force_N": 1672202.32285069,
+            "stage_number": 3,
+            "stage_duration": 0.3802988529205322,
+            "stage_efficiency": 0.1091401020273002,
+            "final_velocity": 66.56919764582821,
+            "max_current": 1118.8977009621103,
+            "max_force": 1672202.32285069
+        },
+        {
+            "final_velocity_ms": 93.15022602809775,
+            "efficiency_percent": 11.078233876969556,
+            "final_kinetic_energy_J": 6923.896173105973,
+            "projectile_mass_g": 1595.925876165479,
+            "initial_energy_J": 62500.0,
+            "simulation_time_s": 0.26043105125427246,
+            "exit_reason": "Projectile reached coil center",
+            "max_current_A": 3279.2837436717145,
+            "max_force_N": 30455.18309485501,
+            "stage_number": 4,
+            "stage_duration": 0.26043105125427246,
+            "stage_efficiency": 0.11078233876969557,
+            "final_velocity": 93.15022602809775,
+            "max_current": 3279.2837436717145,
+            "max_force": 30455.18309485501
+        },
+        {
+            "final_velocity_ms": 112.69322156546593,
+            "efficiency_percent": 16.214303276053688,
+            "final_kinetic_energy_J": 10133.939547533555,
+            "projectile_mass_g": 1595.925876165479,
+            "initial_energy_J": 62500.0,
+            "simulation_time_s": 0.21571993827819824,
+            "exit_reason": "Projectile reached coil center",
+            "max_current_A": 3279.2837436717145,
+            "max_force_N": 28266.967068760783,
+            "stage_number": 5,
+            "stage_duration": 0.21571993827819824,
+            "stage_efficiency": 0.16214303276053688,
+            "final_velocity": 112.69322156546593,
+            "max_current": 3279.2837436717145,
+            "max_force": 28266.967068760783
+        }
+    ]
+}

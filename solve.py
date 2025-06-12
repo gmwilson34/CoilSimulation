@@ -12,11 +12,15 @@ Features:
 - Comprehensive result analysis and efficiency calculations
 - Data export for visualization and further analysis
 - Parametric studies and optimization support
+- Multi-stage coilgun simulation with velocity transfer between stages
+- Interactive progress bar for integration tracking
 """
 
 import numpy as np
 import json
 import time
+import sys
+import threading
 from scipy.integrate import solve_ivp
 from scipy.optimize import minimize_scalar
 import matplotlib.pyplot as plt
@@ -24,6 +28,116 @@ from pathlib import Path
 
 import sys
 from equations import CoilgunPhysicsEngine
+
+class ProgressTracker:
+    """
+    Progress tracking class for ODE integration with terminal progress bar.
+    """
+    
+    def __init__(self, t_span, update_interval=0.1):
+        """
+        Initialize progress tracker.
+        
+        Args:
+            t_span: Time span tuple (t_start, t_end)
+            update_interval: Update interval in seconds
+        """
+        self.t_start, self.t_end = t_span
+        self.t_duration = self.t_end - self.t_start
+        self.update_interval = update_interval
+        
+        # Progress tracking
+        self.current_time = self.t_start
+        self.step_count = 0
+        self.start_real_time = time.time()
+        self.last_update_time = self.start_real_time
+        self.last_step_count = 0
+        
+        # Progress bar settings
+        self.bar_width = 50
+        self.running = True
+        
+        # Start progress display thread
+        self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
+        self.display_thread.start()
+    
+    def update(self, t, y):
+        """
+        Update progress tracking (called from ODE function wrapper).
+        
+        Args:
+            t: Current time
+            y: Current state vector
+        """
+        self.current_time = t
+        self.step_count += 1
+    
+    def _display_loop(self):
+        """Display progress bar in a separate thread."""
+        while self.running:
+            self._draw_progress_bar()
+            time.sleep(self.update_interval)
+    
+    def _draw_progress_bar(self):
+        """Draw the progress bar to terminal."""
+        # Calculate progress percentage
+        if self.t_duration > 0:
+            progress = min(1.0, (self.current_time - self.t_start) / self.t_duration)
+        else:
+            progress = 0.0
+        
+        # Calculate integration rate
+        current_real_time = time.time()
+        real_time_elapsed = current_real_time - self.last_update_time
+        
+        if real_time_elapsed >= self.update_interval:
+            steps_since_update = self.step_count - self.last_step_count
+            integration_rate = steps_since_update / real_time_elapsed if real_time_elapsed > 0 else 0
+            self.last_update_time = current_real_time
+            self.last_step_count = self.step_count
+        else:
+            # Use previous rate or estimate
+            total_elapsed = current_real_time - self.start_real_time
+            integration_rate = self.step_count / total_elapsed if total_elapsed > 0 else 0
+        
+        # Create progress bar
+        filled = int(self.bar_width * progress)
+        bar = '█' * filled + '░' * (self.bar_width - filled)
+        
+        # Format simulation time in appropriate units
+        if self.current_time < 1e-3:
+            time_str = f"{self.current_time*1e6:.1f}μs"
+        elif self.current_time < 1:
+            time_str = f"{self.current_time*1e3:.1f}ms"
+        else:
+            time_str = f"{self.current_time:.3f}s"
+        
+        if self.t_end < 1e-3:
+            total_time_str = f"{self.t_end*1e6:.1f}μs"
+        elif self.t_end < 1:
+            total_time_str = f"{self.t_end*1e3:.1f}ms"
+        else:
+            total_time_str = f"{self.t_end:.3f}s"
+        
+        # Create progress line
+        progress_line = (f"\rIntegration Progress: [{bar}] {progress*100:6.2f}% | "
+                        f"Time: {time_str}/{total_time_str} | "
+                        f"Steps: {self.step_count:,} | "
+                        f"Rate: {integration_rate:.0f} steps/s")
+        
+        # Write to terminal (overwrite previous line)
+        sys.stdout.write(progress_line)
+        sys.stdout.flush()
+    
+    def stop(self):
+        """Stop the progress tracker."""
+        self.running = False
+        if self.display_thread.is_alive():
+            self.display_thread.join(timeout=0.5)
+        
+        # Clear the progress line and move to next line
+        sys.stdout.write('\r' + ' ' * 120 + '\r')
+        sys.stdout.flush()
 
 class CoilgunSimulation:
     """
@@ -45,6 +159,9 @@ class CoilgunSimulation:
         
         # Initialize physics engine
         self.physics = CoilgunPhysicsEngine(config_file)
+        
+        # Progress tracker
+        self.progress_tracker = None
         
         # Initialize results storage
         self.results = {
@@ -74,13 +191,30 @@ class CoilgunSimulation:
             'exit_reason': None
         }
         
-    def run_simulation(self, save_data=True, verbose=True):
+    def _create_progress_tracking_wrapper(self, original_func):
+        """
+        Create a wrapper for the ODE function that tracks progress.
+        
+        Args:
+            original_func: Original ODE function
+            
+        Returns:
+            Wrapped function that updates progress
+        """
+        def wrapped_func(t, y):
+            if self.progress_tracker:
+                self.progress_tracker.update(t, y)
+            return original_func(t, y)
+        return wrapped_func
+        
+    def run_simulation(self, save_data=True, verbose=True, show_progress=True):
         """
         Execute the complete coilgun simulation.
         
         Args:
             save_data: Whether to save detailed time-series data
             verbose: Whether to print progress and results
+            show_progress: Whether to show integration progress bar
             
         Returns:
             dict: Simulation results and analysis
@@ -104,6 +238,17 @@ class CoilgunSimulation:
         max_step = sim_config.get('max_step', 1e-6)
         tolerance = sim_config.get('tolerance', 1e-9)
         method = sim_config.get('method', 'RK45')
+        
+        # Initialize progress tracker if requested
+        if show_progress and verbose:
+            self.progress_tracker = ProgressTracker(t_span)
+            if verbose:
+                print(f"Progress tracking enabled. Integration method: {method}")
+        
+        # Create progress-tracking wrapper for ODE function
+        ode_func = self.physics.circuit_derivatives
+        if self.progress_tracker:
+            ode_func = self._create_progress_tracking_wrapper(ode_func)
         
         # Define events to stop simulation
         def projectile_at_center(t, y):
@@ -134,9 +279,11 @@ class CoilgunSimulation:
             # Solve the ODE system
             if verbose:
                 print(f"Integrating ODEs with {method} method...")
+                if show_progress:
+                    print("Integration progress will be shown below:")
             
             solution = solve_ivp(
-                fun=self.physics.circuit_derivatives,
+                fun=ode_func,
                 t_span=t_span,
                 y0=y0,
                 method=method,
@@ -187,7 +334,8 @@ class CoilgunSimulation:
                     forces = []
                     for i, current in enumerate(currents):
                         position = solution.y[2, i]  # Position is third state variable
-                        force = self.physics.magnetic_force_ferromagnetic(current, position)
+                        current_time = solution.t[i] if i < len(solution.t) else solution.t[-1]  # Time
+                        force = self.physics.magnetic_force_with_circuit_logic(current, position, current_time)
                         forces.append(force)
                     self.simulation_info['max_force'] = np.max(np.abs(forces)) if forces else 0
                 else:
@@ -202,6 +350,12 @@ class CoilgunSimulation:
         except Exception as e:
             print(f"Simulation failed: {str(e)}")
             raise
+        finally:
+            # Always stop progress tracker
+            if self.progress_tracker:
+                self.progress_tracker.stop()
+                if verbose and show_progress:
+                    print("Integration completed.")
     
     def _process_results(self, solution, save_data):
         """
@@ -234,8 +388,8 @@ class CoilgunSimulation:
         ])
         
         self.results['force'] = np.array([
-            self.physics.magnetic_force_ferromagnetic(I, x) 
-            for I, x in zip(self.results['current'], self.results['position'])
+            self.physics.magnetic_force_with_circuit_logic(I, x, current_time) 
+            for I, x, current_time in zip(self.results['current'], self.results['position'], self.results['time'])
         ])
         
         # Power and energy analysis
@@ -465,6 +619,404 @@ class CoilgunSimulation:
         plt.show()
 
 
+class MultiStageCoilgunSimulation:
+    """
+    Multi-stage coilgun simulation class that handles sequential stages with velocity transfer.
+    """
+    
+    def __init__(self, config_file):
+        """
+        Initialize multi-stage simulation with configuration file.
+        
+        Args:
+            config_file: Path to JSON configuration file
+        """
+        self.config_file = config_file
+        
+        # Load configuration
+        with open(config_file, 'r') as f:
+            self.config = json.load(f)
+        
+        if not self.config.get("multi_stage", {}).get("enabled", False):
+            raise ValueError("Configuration file is not set up for multi-stage simulation")
+        
+        self.num_stages = self.config["multi_stage"]["num_stages"]
+        self.shared_settings = self.config["multi_stage"]["shared_settings"]
+        self.stage_groups = self.config["multi_stage"]["stage_groups"]
+        
+        # Initialize results storage for all stages
+        self.stage_results = []
+        self.aggregated_results = {
+            'time': [],
+            'charge': [],
+            'current': [],
+            'position': [],
+            'velocity': [],
+            'force': [],
+            'inductance': [],
+            'power': [],
+            'energy_capacitor': [],
+            'energy_kinetic': [],
+            'stage_transitions': []  # Track when stages transition
+        }
+        
+        # Overall simulation metadata
+        self.simulation_info = {
+            'config_file': config_file,
+            'num_stages': self.num_stages,
+            'start_time': None,
+            'end_time': None,
+            'duration': None,
+            'total_steps': 0,
+            'final_velocity': None,
+            'overall_efficiency': None,
+            'stage_efficiencies': [],
+            'stage_final_velocities': [],
+            'stage_durations': [],
+            'total_initial_energy': 0,
+            'total_final_kinetic_energy': 0
+        }
+    
+    def create_stage_config(self, stage_num):
+        """
+        Create a temporary configuration file for a specific stage.
+        
+        Args:
+            stage_num: Stage number (1-indexed)
+            
+        Returns:
+            str: Path to temporary stage configuration file
+        """
+        stage_info = self.config["stages"][stage_num - 1]  # Convert to 0-indexed
+        
+        # Build single-stage config from multi-stage config
+        stage_config = {}
+        
+        # Add stage-specific settings
+        for key in ["coil", "capacitor", "simulation", "circuit_model", "magnetic_model", "output"]:
+            if key in stage_info:
+                stage_config[key] = stage_info[key]
+            elif key in self.config.get("shared", {}):
+                stage_config[key] = self.config["shared"][key]
+            else:
+                raise ValueError(f"Missing configuration for {key} in stage {stage_num}")
+        
+        # Add projectile (always shared, but may need position/velocity updates)
+        stage_config["projectile"] = self.config["shared"]["projectile"].copy()
+        
+        # Add timing optimization configuration
+        timing_config = {
+            "enabled": True,
+            "pre_charge": True,
+            "optimal_force_timing": True,
+            "charge_time_factor": 3.0,
+            "optimal_force_position": 0.3,
+            "turn_off_position": 0.7,
+            "gradual_turn_on": False,
+            "turn_on_duration": 1e-3
+        }
+        
+        # Override with user-specified timing config if present
+        if "timing_optimization" in self.config.get("shared", {}):
+            timing_config.update(self.config["shared"]["timing_optimization"])
+        
+        stage_config["timing_optimization"] = timing_config
+        
+        # Update projectile initial conditions for this stage
+        if stage_num > 1:
+            # Get final velocity from previous stage
+            prev_stage_results = self.stage_results[stage_num - 2]
+            stage_config["projectile"]["initial_velocity"] = prev_stage_results["final_velocity"]
+            
+            # Reset position for the new stage (projectile starts before new coil)
+            # Assume projectile starts at same relative position to each stage
+            initial_pos_relative = self.config["shared"]["projectile"]["initial_position"]
+            stage_config["projectile"]["initial_position"] = initial_pos_relative
+        
+        # Save temporary config file
+        temp_config_file = f"temp_stage_{stage_num}_config.json"
+        with open(temp_config_file, 'w') as f:
+            json.dump(stage_config, f, indent=4)
+        
+        return temp_config_file
+    
+    def run_simulation(self, save_data=True, verbose=True, show_progress=True):
+        """
+        Execute the complete multi-stage coilgun simulation.
+        
+        Args:
+            save_data: Whether to save detailed time-series data
+            verbose: Whether to print progress and results
+            show_progress: Whether to show integration progress bar for each stage
+            
+        Returns:
+            dict: Aggregated simulation results and analysis
+        """
+        if verbose:
+            print("=" * 70)
+            print("MULTI-STAGE COILGUN SIMULATION")
+            print("=" * 70)
+            print(f"Number of stages: {self.num_stages}")
+            print(f"Shared settings: {', '.join(self.shared_settings)}")
+            print(f"Stage groups: {self.stage_groups}")
+        
+        # Record overall start time
+        self.simulation_info['start_time'] = time.time()
+        
+        # Track cumulative time offset for aggregated results
+        time_offset = 0.0
+        
+        try:
+            # Run each stage sequentially
+            for stage_num in range(1, self.num_stages + 1):
+                if verbose:
+                    print(f"\n" + "="*50)
+                    print(f"RUNNING STAGE {stage_num}/{self.num_stages}")
+                    print("="*50)
+                
+                # Create temporary config for this stage
+                stage_config_file = self.create_stage_config(stage_num)
+                
+                try:
+                    # Initialize and run single-stage simulation
+                    stage_sim = CoilgunSimulation(stage_config_file)
+                    
+                    # Set previous stage velocity for timing optimization (stages 2+)
+                    if stage_num > 1:
+                        prev_velocity = self.stage_results[stage_num - 2]["final_velocity"]
+                        stage_sim.physics.set_previous_stage_velocity(prev_velocity)
+                        
+                        if verbose:
+                            print(f"  Timing optimization enabled:")
+                            print(f"    Previous stage final velocity: {prev_velocity:.2f} m/s")
+                            if hasattr(stage_sim.physics, 'timing_info'):
+                                timing = stage_sim.physics.timing_info
+                                print(f"    L/R time constant: {timing['time_constant']*1000:.1f} ms")
+                                print(f"    Charge time needed: {timing['charge_time_needed']*1000:.1f} ms")
+                                print(f"    Switch-on delay: {timing['switch_on_time']*1000:.1f} ms")
+                                print(f"    Switch-off time: {timing['switch_off_time']*1000:.1f} ms")
+                    
+                    stage_results = stage_sim.run_simulation(save_data=save_data, verbose=verbose, show_progress=show_progress)
+                    
+                    # Store stage results
+                    stage_results['stage_number'] = stage_num
+                    stage_results['stage_duration'] = stage_sim.simulation_info['duration']
+                    stage_results['stage_efficiency'] = stage_sim.simulation_info['efficiency']
+                    stage_results['final_velocity'] = stage_sim.simulation_info['final_velocity']
+                    stage_results['max_current'] = stage_sim.simulation_info.get('max_current', 0)
+                    stage_results['max_force'] = stage_sim.simulation_info.get('max_force', 0)
+                    
+                    # Add stage simulation object for detailed data access
+                    stage_results['simulation_object'] = stage_sim
+                    
+                    self.stage_results.append(stage_results)
+                    
+                    # Update simulation info
+                    self.simulation_info['stage_final_velocities'].append(stage_results['final_velocity'])
+                    self.simulation_info['stage_efficiencies'].append(stage_results['stage_efficiency'])
+                    self.simulation_info['stage_durations'].append(stage_results['stage_duration'])
+                    self.simulation_info['total_steps'] += stage_sim.simulation_info['total_steps']
+                    
+                    # Add to total initial energy
+                    self.simulation_info['total_initial_energy'] += stage_results['initial_energy_J']
+                    
+                    # Aggregate time-series data if available
+                    if save_data and stage_sim.results['time'] is not None:
+                        # Adjust time to be cumulative across stages
+                        adjusted_time = stage_sim.results['time'] + time_offset
+                        
+                        # Add stage transition marker
+                        if stage_num > 1:
+                            self.aggregated_results['stage_transitions'].append(time_offset)
+                        
+                        # Append data
+                        self.aggregated_results['time'].extend(adjusted_time)
+                        self.aggregated_results['charge'].extend(stage_sim.results['charge'])
+                        self.aggregated_results['current'].extend(stage_sim.results['current'])
+                        self.aggregated_results['position'].extend(stage_sim.results['position'])
+                        self.aggregated_results['velocity'].extend(stage_sim.results['velocity'])
+                        self.aggregated_results['force'].extend(stage_sim.results['force'])
+                        self.aggregated_results['inductance'].extend(stage_sim.results['inductance'])
+                        self.aggregated_results['power'].extend(stage_sim.results['power'])
+                        self.aggregated_results['energy_capacitor'].extend(stage_sim.results['energy_capacitor'])
+                        self.aggregated_results['energy_kinetic'].extend(stage_sim.results['energy_kinetic'])
+                        
+                        # Update time offset for next stage
+                        time_offset = adjusted_time[-1]
+                    
+                    if verbose:
+                        print(f"Stage {stage_num} completed:")
+                        print(f"  Final velocity: {stage_results['final_velocity']:.2f} m/s")
+                        print(f"  Efficiency: {stage_results['stage_efficiency']*100:.2f}%")
+                        print(f"  Duration: {stage_results['stage_duration']:.3f} s")
+                
+                finally:
+                    # Clean up temporary config file
+                    if Path(stage_config_file).exists():
+                        Path(stage_config_file).unlink()
+            
+            # Calculate overall results
+            self.simulation_info['final_velocity'] = self.stage_results[-1]['final_velocity']
+            
+            # Calculate overall efficiency
+            total_final_kinetic = 0.5 * self.stage_results[0]['simulation_object'].physics.proj_mass * self.simulation_info['final_velocity']**2
+            self.simulation_info['total_final_kinetic_energy'] = total_final_kinetic
+            self.simulation_info['overall_efficiency'] = total_final_kinetic / self.simulation_info['total_initial_energy']
+            
+            # Record end time
+            self.simulation_info['end_time'] = time.time()
+            self.simulation_info['duration'] = (self.simulation_info['end_time'] - 
+                                               self.simulation_info['start_time'])
+            
+            if verbose:
+                self._print_overall_results()
+            
+            return self._get_aggregated_summary_results()
+            
+        except Exception as e:
+            print(f"Multi-stage simulation failed: {str(e)}")
+            raise
+    
+    def _print_overall_results(self):
+        """Print comprehensive multi-stage simulation results."""
+        print("\n" + "=" * 70)
+        print("MULTI-STAGE SIMULATION RESULTS")
+        print("=" * 70)
+        
+        print(f"Total simulation time: {self.simulation_info['duration']:.3f} seconds")
+        print(f"Total integration steps: {self.simulation_info['total_steps']}")
+        
+        print(f"\nOverall Performance:")
+        print(f"  Final velocity: {self.simulation_info['final_velocity']:.2f} m/s")
+        print(f"  Overall efficiency: {self.simulation_info['overall_efficiency'] * 100:.2f}%")
+        print(f"  Total initial energy: {self.simulation_info['total_initial_energy']:.1f} J")
+        print(f"  Final kinetic energy: {self.simulation_info['total_final_kinetic_energy']:.1f} J")
+        
+        print(f"\nStage-by-Stage Results:")
+        for i, stage_result in enumerate(self.stage_results):
+            stage_num = i + 1
+            print(f"  Stage {stage_num}:")
+            print(f"    Final velocity: {stage_result['final_velocity']:.2f} m/s")
+            print(f"    Efficiency: {stage_result['stage_efficiency']*100:.2f}%")
+            print(f"    Max current: {stage_result.get('max_current', 0):.1f} A")
+            print(f"    Max force: {stage_result.get('max_force', 0):.1f} N")
+            print(f"    Duration: {stage_result['stage_duration']:.3f} s")
+        
+        # Velocity progression
+        print(f"\nVelocity Progression:")
+        print(f"  Initial: 0.0 m/s")
+        for i, velocity in enumerate(self.simulation_info['stage_final_velocities']):
+            print(f"  After stage {i+1}: {velocity:.2f} m/s")
+    
+    def _get_aggregated_summary_results(self):
+        """
+        Get aggregated summary results dictionary.
+        
+        Returns:
+            dict: Summary of key multi-stage simulation results
+        """
+        summary = {
+            'multi_stage': True,
+            'num_stages': self.num_stages,
+            'final_velocity_ms': self.simulation_info['final_velocity'],
+            'overall_efficiency_percent': self.simulation_info['overall_efficiency'] * 100,
+            'total_initial_energy_J': self.simulation_info['total_initial_energy'],
+            'final_kinetic_energy_J': self.simulation_info['total_final_kinetic_energy'],
+            'simulation_time_s': self.simulation_info['duration'],
+            'stage_final_velocities_ms': self.simulation_info['stage_final_velocities'],
+            'stage_efficiencies_percent': [eff * 100 for eff in self.simulation_info['stage_efficiencies']],
+            'stage_durations_s': self.simulation_info['stage_durations'],
+            'projectile_mass_g': self.stage_results[0]['projectile_mass_g']
+        }
+        
+        # Add max current and force across all stages
+        max_current = max(stage.get('max_current', 0) for stage in self.stage_results)
+        max_force = max(stage.get('max_force', 0) for stage in self.stage_results)
+        summary['max_current_A'] = max_current
+        summary['max_force_N'] = max_force
+        
+        return summary
+    
+    def save_results(self, output_dir="multistage_simulation_results"):
+        """
+        Save multi-stage simulation results to files.
+        
+        Args:
+            output_dir: Directory to save results
+        """
+        output_path = Path(output_dir)
+        output_path.mkdir(exist_ok=True)
+        
+        # Save configuration
+        config_file = output_path / "simulation_config.json"
+        with open(config_file, 'w') as f:
+            json.dump(self.config, f, indent=4)
+        
+        # Save overall summary results
+        summary_file = output_path / "multistage_simulation_summary.json"
+        with open(summary_file, 'w') as f:
+            json.dump({
+                'simulation_info': self.simulation_info,
+                'summary': self._get_aggregated_summary_results(),
+                'stage_results': [
+                    {k: v for k, v in stage.items() if k != 'simulation_object'}
+                    for stage in self.stage_results
+                ]
+            }, f, indent=4, default=str)
+        
+        # Save aggregated time-series data if available
+        if self.aggregated_results['time']:
+            # Convert lists to numpy arrays
+            aggregated_arrays = {}
+            for key, data in self.aggregated_results.items():
+                if key != 'stage_transitions' and data:
+                    aggregated_arrays[key] = np.array(data)
+            
+            # Save as compressed numpy file
+            data_file = output_path / "multistage_time_series_data.npz"
+            np.savez_compressed(data_file, **aggregated_arrays, 
+                               stage_transitions=np.array(self.aggregated_results['stage_transitions']))
+            
+            # Also save as CSV for easy analysis
+            csv_file = output_path / "multistage_time_series_data.csv"
+            
+            # Prepare data for CSV
+            csv_data = {
+                'time_s': self.aggregated_results['time'],
+                'charge_C': self.aggregated_results['charge'],
+                'current_A': self.aggregated_results['current'],
+                'position_m': self.aggregated_results['position'],
+                'velocity_ms': self.aggregated_results['velocity'],
+                'force_N': self.aggregated_results['force'],
+                'inductance_H': self.aggregated_results['inductance'],
+                'power_W': self.aggregated_results['power'],
+                'energy_capacitor_J': self.aggregated_results['energy_capacitor'],
+                'energy_kinetic_J': self.aggregated_results['energy_kinetic']
+            }
+            
+            # Create DataFrame-like structure and save
+            try:
+                import pandas as pd
+                df = pd.DataFrame(csv_data)
+                df.to_csv(csv_file, index=False)
+            except ImportError:
+                # Fallback to manual CSV writing if pandas not available
+                import csv
+                with open(csv_file, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(csv_data.keys())
+                    for i in range(len(self.aggregated_results['time'])):
+                        writer.writerow([csv_data[key][i] for key in csv_data.keys()])
+        
+        # Save individual stage results
+        for i, stage_result in enumerate(self.stage_results):
+            stage_dir = output_path / f"stage_{i+1}_results"
+            if 'simulation_object' in stage_result:
+                stage_result['simulation_object'].save_results(str(stage_dir))
+        
+        print(f"Multi-stage results saved to: {output_path.absolute()}")
+
+
 def parametric_study(base_config_file, parameter_name, parameter_values, output_dir="parametric_study"):
     """
     Perform a parametric study by varying a single parameter.
@@ -537,7 +1089,18 @@ def find_config_files():
             with open(json_file, 'r') as f:
                 data = json.load(f)
                 # Check if it looks like a coilgun config file
-                if any(key in data for key in ['coil', 'capacitor', 'projectile', 'simulation']):
+                # For single-stage configs: check top-level keys
+                is_single_stage = any(key in data for key in ['coil', 'capacitor', 'projectile', 'simulation'])
+                
+                # For multi-stage configs: check for multi_stage key and nested structure
+                is_multi_stage = (
+                    'multi_stage' in data and 
+                    data.get('multi_stage', {}).get('enabled', False) and
+                    'stages' in data and 
+                    'shared' in data
+                )
+                
+                if is_single_stage or is_multi_stage:
                     config_files.append(json_file)
         except (json.JSONDecodeError, IOError):
             # Skip files that can't be read or aren't valid JSON
@@ -604,63 +1167,158 @@ def select_config_file():
 def main():
     """Main function to run coilgun simulation from command line"""
     
-    config_file = select_config_file()
-    
-    print("=" * 60)
-    print("COILGUN SIMULATION SOLVER")
-    print("=" * 60)
-    print(f"Configuration file: {config_file}")
+    try:
+        config_file = select_config_file()
+        
+        print("=" * 60)
+        print("COILGUN SIMULATION SOLVER")
+        print("=" * 60)
+        print(f"Configuration file: {config_file}")
+        
+        # Ask user if they want to proceed with simulation
+        print(f"\nReady to run simulation with: {Path(config_file).name}")
+        proceed = input("Do you want to proceed? (Y/n): ").strip().lower()
+        if proceed in ['n', 'no', 'q', 'quit']:
+            print("Simulation cancelled by user.")
+            sys.exit(0)
+        elif proceed == '' or proceed in ['y', 'yes']:
+            pass  # Continue
+        else:
+            print("Invalid input. Proceeding with simulation...")
+        
+        print("\nStarting simulation...")
+        
+    except KeyboardInterrupt:
+        print("\n\nSimulation cancelled by user (Ctrl+C)")
+        print("Exiting gracefully...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Error during setup: {e}")
+        sys.exit(1)
     
     try:
-        # Initialize and run simulation
-        sim = CoilgunSimulation(config_file)
-        results = sim.run_simulation(save_data=True, verbose=True)
+        # Check if this is a multi-stage configuration
+        with open(config_file, 'r') as f:
+            config = json.load(f)
         
-        # Create output directory based on config filename
-        config_name = Path(config_file).stem
-        output_dir = f"results_{config_name}"
+        is_multi_stage = config.get("multi_stage", {}).get("enabled", False)
         
-        # Save detailed results to CSV and JSON
-        print("\n" + "="*50)
-        print("SAVING RESULTS")
-        print("="*50)
-        sim.save_results(output_dir)
-        
-        # Print summary
-        print("\n" + "="*50)
-        print("SIMULATION SUMMARY")
-        print("="*50)
-        print(f"Final velocity: {results['final_velocity_ms']:.1f} m/s")
-        print(f"Efficiency: {results['efficiency_percent']:.1f}%")
-        print(f"Max current: {results.get('max_current_A', 0):.1f} A")
-        print(f"Max force: {results.get('max_force_N', 0):.1f} N")
-        print(f"Simulation time: {results['simulation_time_s']:.3f} s")
-        print(f"Exit reason: {results['exit_reason']}")
-        
-        # Calculate key performance metrics
-        initial_energy = results['initial_energy_J']
-        final_kinetic_energy = 0.5 * sim.physics.proj_mass * results['final_velocity_ms']**2
-        energy_transferred = final_kinetic_energy
-        
-        print(f"\nENERGY ANALYSIS:")
-        print(f"Initial capacitor energy: {initial_energy:.1f} J")
-        print(f"Final kinetic energy: {final_kinetic_energy:.1f} J")
-        print(f"Energy transferred to projectile: {energy_transferred:.1f} J")
-        
-        print(f"\nResults saved to directory: {output_dir}/")
-        print("- time_series_data.csv (detailed time series)")
-        print("- simulation_summary.json (summary results)")
+        if is_multi_stage:
+            # Use multi-stage simulation
+            print("Detected multi-stage configuration")
+            sim = MultiStageCoilgunSimulation(config_file)
+            results = sim.run_simulation(save_data=True, verbose=True, show_progress=True)
+            
+            # Create output directory based on config filename
+            config_name = Path(config_file).stem
+            output_dir = f"results_{config_name}"
+            
+            # Save detailed results
+            print("\n" + "="*50)
+            print("SAVING RESULTS")
+            print("="*50)
+            sim.save_results(output_dir)
+            
+            # Print summary
+            print("\n" + "="*50)
+            print("SIMULATION SUMMARY")
+            print("="*50)
+            print(f"Final velocity: {results['final_velocity_ms']:.1f} m/s")
+            print(f"Overall efficiency: {results['overall_efficiency_percent']:.1f}%")
+            print(f"Total initial energy: {results['total_initial_energy_J']:.1f} J")
+            print(f"Final kinetic energy: {results['final_kinetic_energy_J']:.1f} J")
+            print(f"Max current: {results.get('max_current_A', 0):.1f} A")
+            print(f"Max force: {results.get('max_force_N', 0):.1f} N")
+            print(f"Total simulation time: {results['simulation_time_s']:.3f} s")
+            
+            print(f"\nStage Performance:")
+            for i, (velocity, efficiency) in enumerate(zip(results['stage_final_velocities_ms'], results['stage_efficiencies_percent'])):
+                print(f"  Stage {i+1}: {velocity:.1f} m/s ({efficiency:.1f}% efficiency)")
+            
+            print(f"\nResults saved to directory: {output_dir}/")
+            print("- multistage_simulation_summary.json (overall results)")
+            print("- multistage_time_series_data.csv (aggregated time series)")
+            print("- stage_X_results/ (individual stage results)")
+            
+        else:
+            # Use single-stage simulation
+            print("Detected single-stage configuration")
+            sim = CoilgunSimulation(config_file)
+            results = sim.run_simulation(save_data=True, verbose=True, show_progress=True)
+            
+            # Create output directory based on config filename
+            config_name = Path(config_file).stem
+            output_dir = f"results_{config_name}"
+            
+            # Save detailed results to CSV and JSON
+            print("\n" + "="*50)
+            print("SAVING RESULTS")
+            print("="*50)
+            sim.save_results(output_dir)
+            
+            # Print summary
+            print("\n" + "="*50)
+            print("SIMULATION SUMMARY")
+            print("="*50)
+            print(f"Final velocity: {results['final_velocity_ms']:.1f} m/s")
+            print(f"Efficiency: {results['efficiency_percent']:.1f}%")
+            print(f"Max current: {results.get('max_current_A', 0):.1f} A")
+            print(f"Max force: {results.get('max_force_N', 0):.1f} N")
+            print(f"Simulation time: {results['simulation_time_s']:.3f} s")
+            print(f"Exit reason: {results['exit_reason']}")
+            
+            # Calculate key performance metrics
+            initial_energy = results['initial_energy_J']
+            final_kinetic_energy = 0.5 * sim.physics.proj_mass * results['final_velocity_ms']**2
+            energy_transferred = final_kinetic_energy
+            
+            print(f"\nENERGY ANALYSIS:")
+            print(f"Initial capacitor energy: {initial_energy:.1f} J")
+            print(f"Final kinetic energy: {final_kinetic_energy:.1f} J")
+            print(f"Energy transferred to projectile: {energy_transferred:.1f} J")
+            
+            print(f"\nResults saved to directory: {output_dir}/")
+            print("- time_series_data.csv (detailed time series)")
+            print("- simulation_summary.json (summary results)")
         
         print(f"\nTo view detailed visualizations, run:")
         print(f"python view.py {config_file}")
         
+    except KeyboardInterrupt:
+        print("\n\nSimulation interrupted by user (Ctrl+C)")
+        print("Simulation results may be incomplete.")
+        print("Exiting gracefully...")
+        sys.exit(0)
     except Exception as e:
         print(f"Simulation failed: {e}")
         import traceback
         traceback.print_exc()
+        print("\nSimulation terminated due to error.")
         sys.exit(1)
+
+
+def signal_handler(signum, frame):
+    """Handle signals gracefully"""
+    print("\n\nReceived interrupt signal.")
+    print("Cleaning up and exiting gracefully...")
+    sys.exit(0)
 
 
 if __name__ == '__main__':
     import os
-    main()
+    import signal
+    
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nProgram interrupted by user.")
+        print("Exiting gracefully...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nUnhandled error: {e}")
+        sys.exit(1)
