@@ -15,11 +15,13 @@ import os
 from typing import Dict, Any, List, Tuple
 from solve import CoilgunSimulation  # Make sure solve.py is in your PYTHONPATH
 
+# Check if tqdm is available for progress bars
 try:
     from tqdm import tqdm
     TQDM_AVAILABLE = True
 except ImportError:
     TQDM_AVAILABLE = False
+
 
 def load_material_data() -> Dict[str, Any]:
     """Load material properties from materials.json if available, otherwise use defaults."""
@@ -34,6 +36,7 @@ def load_material_data() -> Dict[str, Any]:
         print("Using basic material properties...")
         return create_default_materials()
 
+
 def create_default_materials() -> Dict[str, Any]:
     """Provide a minimal set of material properties if materials.json is missing."""
     return {
@@ -47,8 +50,9 @@ def create_default_materials() -> Dict[str, Any]:
             "awg_diameter_mm": {"14": 1.628, "16": 1.291, "18": 1.024, "20": 0.812},
             "current_capacity_A": {"14": 32, "16": 22, "18": 16, "20": 11}
         },
-        "magnetic_methods": ["biot_savart"]
+        "magnetic_methods": ["biot_savart", "finite_element", "analytical"]
     }
+
 
 def get_float_input(prompt: str, default: float = None, min_val: float = None, max_val: float = None) -> float:
     """Prompt the user for a float input with optional default, min, and max."""
@@ -71,6 +75,7 @@ def get_float_input(prompt: str, default: float = None, min_val: float = None, m
         except ValueError:
             print("Please enter a valid number.")
 
+
 def get_int_input(prompt: str, default: int = None, min_val: int = None, max_val: int = None) -> int:
     """Prompt the user for an integer input with optional default, min, and max."""
     while True:
@@ -91,6 +96,7 @@ def get_int_input(prompt: str, default: int = None, min_val: int = None, max_val
             return value
         except ValueError:
             print("Please enter a valid integer.")
+
 
 def get_choice_input(prompt: str, choices: list, default: str = None) -> str:
     """Prompt the user to select from a list of choices, with an optional default."""
@@ -113,11 +119,12 @@ def get_choice_input(prompt: str, choices: list, default: str = None) -> str:
         except ValueError:
             print("Please enter a valid number.")
 
+
 def get_yes_no_input(prompt: str, default: bool = None) -> bool:
     """Prompt the user for a yes/no input with an optional default."""
     while True:
-        default_str = "y" if default else "n" if default is not None else ""
-        user_input = input(f"{prompt} (y/n) [{default_str}]: ").strip().lower()
+        options = "y/N" if default is False else "Y/n" if default is True else "y/n"
+        user_input = input(f"{prompt} ({options}): ").strip().lower()
         if not user_input and default is not None:
             return default
         if user_input in ["y", "yes"]:
@@ -126,6 +133,7 @@ def get_yes_no_input(prompt: str, default: bool = None) -> bool:
             return False
         print("Please enter 'y' or 'n'.")
 
+
 def get_range_input(prompt: str, default_min, default_max, default_step, is_int=True):
     """Prompt the user for a min, max, and step for a parameter range."""
     min_val = get_int_input(f"{prompt} min", default_min) if is_int else get_float_input(f"{prompt} min", default_min)
@@ -133,19 +141,23 @@ def get_range_input(prompt: str, default_min, default_max, default_step, is_int=
     step = get_int_input(f"{prompt} step", default_step) if is_int else get_float_input(f"{prompt} step", default_step)
     return min_val, max_val, step
 
+
 def calculate_projectile_height(mass: float, diameter: float, density: float) -> float:
     """Calculate projectile height from mass, diameter, and density."""
     radius = diameter / 2
     height = mass / (np.pi * radius**2 * density)
     return height
 
+
 def get_wire_gauge_range(wire_spec: Dict[str, Any]) -> List[int]:
     """Get a sorted list of available wire gauges from the wire_spec dictionary."""
     return sorted([int(k) for k in wire_spec["awg_diameter_mm"].keys()])
 
+
 def awg_to_diameter_m(wire_gauge: int, wire_spec: Dict[str, Any]) -> float:
     """Convert AWG to diameter in meters using wire_spec."""
     return wire_spec["awg_diameter_mm"][str(wire_gauge)] / 1000.0
+
 
 def build_config_dict(params, materials, wire_spec):
     """Build a simulation config dictionary for a given parameter set."""
@@ -173,7 +185,7 @@ def build_config_dict(params, materials, wire_spec):
             "esl": 5e-8
         },
         "simulation": {
-            "time_span": [0, 0.02],
+            "time_span": [0, params["simulation_time"]],
             "max_step": 1e-6,
             "tolerance": 1e-9,
             "method": "RK45"
@@ -201,6 +213,7 @@ def build_config_dict(params, materials, wire_spec):
         }
     }
     return config
+
 
 def simulate_and_score(params, materials, wire_spec, target_velocity):
     """
@@ -255,7 +268,12 @@ def optimize_coilgun(params, materials, wire_spec, target_velocity, total_combin
     voltage_min, voltage_max, voltage_step = params["voltage"]
     cap_min, cap_max, cap_step = params["capacitance"]
 
-    # Progress bar setup
+    # Optimization header
+    print("\n" + "=" * 25)
+    print("Optimization Process")
+    print("=" * 25 + "\n")
+    
+    # Progress bar setup    
     if TQDM_AVAILABLE:
         pbar = tqdm(total=total_combinations, desc="Optimizing")
     else:
@@ -313,59 +331,84 @@ def main():
     """
     Main function to prompt user, run optimization, and save results.
     """
-    print("=== COILGUN OPTIMIZATION ===")
+    print("=" * 50)
+    print("COILGUN OPTIMIZATION")
+    print("=" * 50)
+    print("\nWelcome to the Coilgun Optimization Tool!")
+    print("This tool will help you find the optimal configuration for your coilgun design.")
+    print("Please follow the prompts to enter your design parameters.")
 
     # Load materials and wire specs
     materials = load_material_data()
     wire_spec = materials["wire_specifications"]
-    material_choices = [k for k in materials["materials"].keys() if "density" in materials["materials"][k]]
-    wire_material_choices = [k for k in materials["materials"].keys() if "resistivity" in materials["materials"][k]]
-    magnetic_methods = materials.get("magnetic_methods", ["biot_savart"])
-
-    # --- Section: Projectile Parameters ---
-    print("\n--- Projectile Parameters ---")
-    projectile_material = get_choice_input("Projectile material", material_choices, default="Low_Carbon_Steel")
+    # Filter to only magnetic materials (mu_r > 10)
+    material_choices = [k for k in materials["materials"].keys() 
+                       if materials["materials"][k].get("mu_r", 1) > 10]
+    # Filter to materials with conductivity specified
+    wire_material_choices = [k for k in materials["materials"].keys() 
+                           if "conductivity" in materials["materials"][k]]
+    magnetic_methods = ["biot_savart", "finite_element", "analytical"]
+    
+    # Section: Projectile Parameters
+    print("\n" + "=" * 25)
+    print("Projectile Parameters")
+    print("=" * 25)
+    projectile_material = get_choice_input("Projectile material", material_choices, default="Pure_Iron")
     projectile_mass = get_float_input("Projectile mass (kg)", default=1.0, min_val=0.01)
-    projectile_diameter = get_float_input("Projectile diameter (m)", default=0.012, min_val=0.001)
+    projectile_diameter = get_float_input("Projectile diameter (m)", default=0.0508, min_val=0.001)
     density = materials["materials"][projectile_material]["density"]
     projectile_height = calculate_projectile_height(projectile_mass, projectile_diameter, density)
     print(f"Calculated projectile height: {projectile_height:.4f} m")
     initial_position = get_float_input("Projectile initial position (m)", default=-0.05)
     initial_velocity = get_float_input("Projectile initial velocity (m/s)", default=0.0)
-    target_velocity = get_float_input("Target velocity (m/s)", default=105.0, min_val=0.1)
-
-    # --- Section: Coil Parameters ---
-    print("\n--- Coil Parameters ---")
+    target_velocity = get_float_input("Target velocity (m/s)", default=100.0, min_val=0.1)    
+    
+    # Section: Coil Parameters
+    print("\n" + "=" * 25)
+    print("Coil Parameters")
+    print("=" * 25)
     wire_material = get_choice_input("Wire material", wire_material_choices, default="Copper")
     insulation_thickness = get_float_input("Insulation thickness (m)", default=5e-5, min_val=0.0)
     packing_factor = get_float_input("Packing factor (0-1)", default=0.85, min_val=0.0, max_val=1.0)
-    stages = get_range_input("Number of stages", 6, 10, 1, is_int=True)
+    stages = get_range_input("Number of stages", 5, 10, 1, is_int=True)
     wire_gauge_range = get_wire_gauge_range(wire_spec)
-    wire_gauge_min = get_int_input("Wire gauge min (AWG)", 14, min(wire_gauge_range), max(wire_gauge_range))
+    wire_gauge_min = get_int_input("Wire gauge min (AWG)", 10, min(wire_gauge_range), max(wire_gauge_range))
     wire_gauge_max = get_int_input("Wire gauge max (AWG)", 18, min(wire_gauge_range), max(wire_gauge_range))
-    layers = get_range_input("Number of layers", 1, 6, 1, is_int=True)
-    turns = get_range_input("Turns per layer", 10, 100, 10, is_int=True)
+    layers = get_range_input("Number of layers", 1, 8, 1, is_int=True)
+    turns = get_range_input("Turns per layer", 10, 80, 10, is_int=True)    
+    
+    # Section: Capacitor Parameters
+    print("\n" + "=" * 25)
+    print("Capacitor Parameters")
+    print("=" * 25)
+    voltage = get_range_input("Capacitor voltage (V)", 100, 600, 50, is_int=True)
+    capacitance = get_range_input("Capacitance (F)", 0.01, 1, 0.01, is_int=False)
 
-    # --- Section: Capacitor Parameters ---
-    print("\n--- Capacitor Parameters ---")
-    voltage = get_range_input("Capacitor voltage (V)", 200, 600, 50, is_int=True)
-    capacitance = get_range_input("Capacitance (F)", 0.01, 0.1, 0.01, is_int=False)
-
-    # --- Section: Circuit Model Parameters ---
-    print("\n--- Circuit Model Parameters ---")
+    # Section: Circuit Model Parameters
+    print("\n" + "=" * 25)
+    print("Circuit Model Parameters")
+    print("=" * 25)
     switch_resistance = get_float_input("Switch resistance (Ohms)", default=0.001, min_val=0.0)
     switch_inductance = get_float_input("Switch inductance (H)", default=1e-8, min_val=0.0)
     parasitic_capacitance = get_float_input("Parasitic capacitance (F)", default=1e-11, min_val=0.0)
-    include_skin_effect = get_yes_no_input("Include skin effect?", default=False)
-    include_proximity_effect = get_yes_no_input("Include proximity effect?", default=False)
-
-    # --- Section: Magnetic Model Parameters ---
-    print("\n--- Magnetic Model Parameters ---")
+    include_skin_effect = get_yes_no_input("Include skin effect?", default=True)
+    include_proximity_effect = get_yes_no_input("Include proximity effect?", default=True)    
+    
+    # Section: Magnetic Model Parameters
+    print("\n" + "=" * 25)
+    print("Magnetic Model Parameters")
+    print("=" * 25)
     calculation_method = get_choice_input("Magnetic calculation method", magnetic_methods, default=magnetic_methods[0])
     axial_discretization = get_int_input("Axial discretization", default=1000, min_val=1)
     radial_discretization = get_int_input("Radial discretization", default=100, min_val=1)
     include_saturation = get_yes_no_input("Include saturation?", default=False)
     include_hysteresis = get_yes_no_input("Include hysteresis?", default=False)
+
+    # Section: Simulation Parameters
+    print("\n" + "=" * 25)
+    print("Simulation Parameters")
+    print("=" * 25)
+    simulation_time = get_float_input("Simulation time (s)", default=0.1, min_val=0.01)
 
     # Calculate total combinations for progress bar
     num_stages = ((stages[1] - stages[0]) // stages[2]) + 1
@@ -399,27 +442,71 @@ def main():
         "include_proximity_effect": include_proximity_effect,
         "calculation_method": calculation_method,
         "axial_discretization": axial_discretization,
-        "radial_discretization": radial_discretization,
+        "radial_discretization": radial_discretization,        
         "include_saturation": include_saturation,
-        "include_hysteresis": include_hysteresis
+        "include_hysteresis": include_hysteresis,
+        "simulation_time": simulation_time
     }
     best_config, results_list = optimize_coilgun(params, materials, wire_spec, target_velocity, total_combinations)
-    # Save best configuration to JSON
+    
     if best_config:
+        # Convert to simulation config format
+        config_dict = build_config_dict(best_config, materials, wire_spec)
         best_config_filename = "best_coilgun_config.json"
         with open(best_config_filename, 'w') as f:
-            json.dump(best_config, f, indent=4)
-        print(f"Best configuration saved to: {best_config_filename}")
-    # Save all valid configurations to CSV
-    if results_list:
-        results_csv_filename = "coilgun_optimization_results.csv"
-        save_results_to_csv(results_list, results_csv_filename)
-        print(f"All valid configurations saved to: {results_csv_filename}")
-    # Print best configuration summary
-    if best_config:
-        print("\n=== Best Coilgun Configuration Found ===")
-        for k, v in best_config.items():
-            print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
+            json.dump(config_dict, f, indent=4)
+        print(f"\nBest configuration saved to: {best_config_filename}")
+        
+        print("\n" + "="*50)
+        print("COILGUN CONFIGURATION SUMMARY")
+        print("="*50)
+        
+        print("\n=== Coil Parameters ===")
+        print(f"Inner diameter: {config_dict['coil']['inner_diameter']*1000:.1f} mm")
+        print(f"Length: {config_dict['coil']['length']*1000:.1f} mm")
+        print(f"Wire gauge: {config_dict['coil']['wire_gauge_awg']} AWG")
+        print(f"Number of layers: {config_dict['coil']['num_layers']}")
+        print(f"Material: {config_dict['coil']['wire_material']}")
+        print(f"Insulation thickness: {config_dict['coil']['insulation_thickness']*1000:.3f} mm")
+        print(f"Packing factor: {config_dict['coil']['packing_factor']:.2f}")
+        
+        print("\n=== Projectile Parameters ===")
+        print(f"Diameter: {config_dict['projectile']['diameter']*1000:.1f} mm")
+        print(f"Length: {config_dict['projectile']['length']*1000:.1f} mm")
+        print(f"Material: {config_dict['projectile']['material']}")
+        print(f"Initial position: {config_dict['projectile']['initial_position']*1000:.1f} mm")
+        print(f"Initial velocity: {config_dict['projectile']['initial_velocity']:.1f} m/s")
+        
+        print("\n=== Capacitor Parameters ===")
+        print(f"Capacitance: {config_dict['capacitor']['capacitance']*1000:.1f} mF")
+        print(f"Initial voltage: {config_dict['capacitor']['initial_voltage']:.0f} V")
+        print(f"ESR: {config_dict['capacitor']['esr']:.3f} Ω")
+        print(f"ESL: {config_dict['capacitor']['esl']*1e9:.1f} nH")
+        
+        print("\n=== Circuit Model Parameters ===")
+        print(f"Switch resistance: {config_dict['circuit_model']['switch_resistance']:.3f} Ω")
+        print(f"Switch inductance: {config_dict['circuit_model']['switch_inductance']*1e9:.1f} nH")
+        print(f"Parasitic capacitance: {config_dict['circuit_model']['parasitic_capacitance']*1e12:.1f} pF")
+        print(f"Include skin effect: {'Yes' if config_dict['circuit_model']['include_skin_effect'] else 'No'}")
+        print(f"Include proximity effect: {'Yes' if config_dict['circuit_model']['include_proximity_effect'] else 'No'}")
+        
+        print("\n=== Magnetic Model Parameters ===")
+        print(f"Calculation method: {config_dict['magnetic_model']['calculation_method']}")
+        print(f"Axial discretization: {config_dict['magnetic_model']['axial_discretization']}")
+        print(f"Radial discretization: {config_dict['magnetic_model']['radial_discretization']}")
+        print(f"Include saturation: {'Yes' if config_dict['magnetic_model']['include_saturation'] else 'No'}")
+        print(f"Include hysteresis: {'Yes' if config_dict['magnetic_model']['include_hysteresis'] else 'No'}")
+        
+        print("\n=== Results ===")
+        print(f"Final velocity: {best_config.get('velocity', 0):.1f} m/s")
+        if 'max_current' in best_config:
+            print(f"Maximum current: {best_config['max_current']:.1f} A")
+        
+        # Save all valid configurations to CSV
+        if results_list:
+            results_csv_filename = "coilgun_optimization_results.csv"
+            save_results_to_csv(results_list, results_csv_filename)
+            print(f"\nAll valid configurations saved to: {results_csv_filename}")
     else:
         print("\nNo valid coilgun configuration found. Try adjusting your parameter ranges or target velocity.")
 
