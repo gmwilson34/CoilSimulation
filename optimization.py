@@ -184,7 +184,7 @@ def build_config_dict(params, materials, wire_spec):
                 "time_span": [0, params["simulation_time"]],
                 "max_step": 1e-6,
                 "tolerance": 1e-9,
-                "method": "LSODA"
+                "method": "RK45"  # Use RK45 for better stability in multi-stage simulations
             },
             "circuit_model": {
                 "switch_resistance": params["switch_resistance"],
@@ -443,7 +443,7 @@ def main():
     print("\n" + "=" * 25)
     print("Capacitor Parameters")
     print("=" * 25)
-    voltage = get_range_input("Capacitor voltage (V)", 100, 600, 50, is_int=True)
+    voltage = get_range_input("Capacitor voltage (V)", 200, 600, 50, is_int=True)
     capacitance = get_range_input("Capacitance (F)", 0.01, 1, 0.01, is_int=False)
 
     # Section: Circuit Model Parameters
