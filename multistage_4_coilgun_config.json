@@ -26,7 +26,7 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 6,
+                "num_layers": 8,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
                 "packing_factor": 0.85
@@ -39,7 +39,7 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 6,
+                "num_layers": 8,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
                 "packing_factor": 0.85
@@ -52,7 +52,7 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 6,
+                "num_layers": 8,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
                 "packing_factor": 0.85
@@ -65,7 +65,7 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 6,
+                "num_layers": 8,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
                 "packing_factor": 0.85
@@ -74,22 +74,25 @@
     ],
     "shared": {
         "simulation": {
-            "time_span": [0, 0.15],
-            "max_step": 1e-6,
-            "tolerance": 1e-7,
-            "method": "RK45"
+            "time_span": [
+                0,
+                0.1
+            ],
+            "max_step": 1e-06,
+            "tolerance": 1e-09,
+            "method": "LSODA"
         },
         "circuit_model": {
-            "switch_resistance": 5e-4,
+            "switch_resistance": 0.001,
             "switch_inductance": 1e-08,
             "parasitic_capacitance": 1e-11,
             "include_skin_effect": true,
             "include_proximity_effect": true
         },
         "magnetic_model": {
-            "calculation_method": "exact_elliptic",
+            "calculation_method": "biot_savart",
             "axial_discretization": 1000,
-            "radial_discretization": 1000,
+            "radial_discretization": 100,
             "include_saturation": true,
             "include_hysteresis": false
         },
@@ -101,9 +104,9 @@
             "save_interval": 100
         },
         "capacitor": {
-            "capacitance": 0.333,
+            "capacitance": 0.3333,
             "initial_voltage": 900.0,
-            "esr": 0.005,
+            "esr": 0.01,
             "esl": 5e-08
         },
         "projectile": {
