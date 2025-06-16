@@ -205,16 +205,24 @@ def build_config_dict(params, materials, wire_spec):
                 "save_current_profile": True,
                 "save_field_data": False,
                 "print_progress": False,
-                "save_interval": 100
+                "save_interval": 100,
+                "suppress_init_output": True  # Suppress physics initialization output during optimization
             }
         }
     }
+      # Calculate coil length based on turns per layer and wire specifications
+    wire_gauge = params["wire_gauge"]
+    wire_diameter_mm = wire_spec["awg_diameter_mm"][str(wire_gauge)]
+    wire_diameter_m = wire_diameter_mm / 1000.0
+    insulation_thickness = params["insulation_thickness"]
+    effective_wire_diameter = wire_diameter_m + insulation_thickness
+    calculated_coil_length = params["turns_per_layer"] * effective_wire_diameter
     
     # Create stage-specific configurations
     base_stage_config = {
         "coil": {
             "inner_diameter": params["projectile_diameter"] * 1.05,
-            "length": params["projectile_height"],
+            "length": calculated_coil_length,
             "wire_gauge_awg": params["wire_gauge"],
             "num_layers": params["layers"],
             "turns_per_layer": params["turns_per_layer"],
@@ -541,12 +549,12 @@ def main():
         print(f"Include saturation: {'Yes' if magnetic['include_saturation'] else 'No'}")
         print(f"Include hysteresis: {'Yes' if magnetic['include_hysteresis'] else 'No'}")
 
-        # Print common stage configuration
-        print(f"\n=== Stage Configuration (identical for all {len(config_dict['stages'])} stages) ===")
+        # Print common stage configuration        print(f"\n=== Stage Configuration (identical for all {len(config_dict['stages'])} stages) ===")
         stage = config_dict['stages'][0]  # Use first stage since all are identical
         print("\n--- Coil Parameters ---")
         print(f"Inner diameter: {stage['coil']['inner_diameter']*1000:.1f} mm")
-        print(f"Length: {stage['coil']['length']*1000:.1f} mm")
+        print(f"Length (calculated): {stage['coil']['length']*1000:.1f} mm")
+        print(f"Projectile length: {config_dict['shared']['projectile']['length']*1000:.1f} mm")
         print(f"Wire gauge: {stage['coil']['wire_gauge_awg']} AWG")
         print(f"Number of layers: {stage['coil']['num_layers']}")
         print(f"Turns per layer: {stage['coil'].get('turns_per_layer', best_config['params'].get('turns_per_layer', 'N/A'))}")
