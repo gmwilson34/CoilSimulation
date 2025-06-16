@@ -1,0 +1,117 @@
+{
+    "multi_stage": {
+        "enabled": true,
+        "num_stages": 4,
+        "shared_settings": [
+            "simulation",
+            "circuit_model",
+            "magnetic_model",
+            "output",
+            "capacitor"
+        ],
+        "stage_groups": [
+            [
+                1,
+                2,
+                3,
+                4
+            ]
+        ]
+    },
+    "stages": [
+        {
+            "stage_id": 1,
+            "group_id": "group_1",
+            "coil": {
+                "inner_diameter": 0.052,
+                "length": 0.064,
+                "wire_gauge_awg": 22,
+                "num_layers": 6,
+                "wire_material": "Copper",
+                "insulation_thickness": 5e-05,
+                "packing_factor": 0.85
+            }
+        },
+        {
+            "stage_id": 2,
+            "group_id": "group_1",
+            "coil": {
+                "inner_diameter": 0.052,
+                "length": 0.064,
+                "wire_gauge_awg": 22,
+                "num_layers": 6,
+                "wire_material": "Copper",
+                "insulation_thickness": 5e-05,
+                "packing_factor": 0.85
+            }
+        },
+        {
+            "stage_id": 3,
+            "group_id": "group_1",
+            "coil": {
+                "inner_diameter": 0.052,
+                "length": 0.064,
+                "wire_gauge_awg": 22,
+                "num_layers": 6,
+                "wire_material": "Copper",
+                "insulation_thickness": 5e-05,
+                "packing_factor": 0.85
+            }
+        },
+        {
+            "stage_id": 4,
+            "group_id": "group_1",
+            "coil": {
+                "inner_diameter": 0.052,
+                "length": 0.064,
+                "wire_gauge_awg": 22,
+                "num_layers": 6,
+                "wire_material": "Copper",
+                "insulation_thickness": 5e-05,
+                "packing_factor": 0.85
+            }
+        }
+    ],
+    "shared": {
+        "simulation": {
+            "time_span": [0, 0.15],
+            "max_step": 1e-6,
+            "tolerance": 1e-7,
+            "method": "RK45"
+        },
+        "circuit_model": {
+            "switch_resistance": 5e-4,
+            "switch_inductance": 1e-08,
+            "parasitic_capacitance": 1e-11,
+            "include_skin_effect": true,
+            "include_proximity_effect": true
+        },
+        "magnetic_model": {
+            "calculation_method": "exact_elliptic",
+            "axial_discretization": 1000,
+            "radial_discretization": 1000,
+            "include_saturation": true,
+            "include_hysteresis": false
+        },
+        "output": {
+            "save_trajectory": true,
+            "save_current_profile": true,
+            "save_field_data": true,
+            "print_progress": true,
+            "save_interval": 100
+        },
+        "capacitor": {
+            "capacitance": 0.333,
+            "initial_voltage": 900.0,
+            "esr": 0.005,
+            "esl": 5e-08
+        },
+        "projectile": {
+            "diameter": 0.0508,
+            "length": 0.064,
+            "material": "Pure_Iron",
+            "initial_position": 0.0,
+            "initial_velocity": 0.0
+        }
+    }
+}
