@@ -96,12 +96,16 @@ class CoilgunPhysicsEngine:
         # Numerical stability parameters
         self.numerical_stability = self.config.get('simulation', {}).get('numerical_stability', 'high')
         
-        print("Advanced physics models initialized:")
-        print(f"  - Eddy currents: {'Enabled' if self.eddy_current_enabled else 'Disabled'}")
-        print(f"  - Magnetic saturation: {'Enabled' if self.saturation_enabled else 'Disabled'}")
-        print(f"  - Hysteresis: {'Enabled' if self.hysteresis_enabled else 'Disabled'}")
-        print(f"  - Skin effect: {'Enabled' if self.skin_effect_enabled else 'Disabled'}")
-        print(f"  - Proximity effect: {'Enabled' if self.proximity_effect_enabled else 'Disabled'}")
+        # Check if we should suppress initialization output (useful during optimization)
+        suppress_init_output = self.config.get('output', {}).get('suppress_init_output', False)
+        
+        if not suppress_init_output:
+            print("Advanced physics models initialized:")
+            print(f"  - Eddy currents: {'Enabled' if self.eddy_current_enabled else 'Disabled'}")
+            print(f"  - Magnetic saturation: {'Enabled' if self.saturation_enabled else 'Disabled'}")
+            print(f"  - Hysteresis: {'Enabled' if self.hysteresis_enabled else 'Disabled'}")
+            print(f"  - Skin effect: {'Enabled' if self.skin_effect_enabled else 'Disabled'}")
+            print(f"  - Proximity effect: {'Enabled' if self.proximity_effect_enabled else 'Disabled'}")
     
     def _initialize_bh_curves(self):
         """
@@ -2404,4 +2408,3 @@ if __name__ == '__main__':
         dL_dx = engine.get_inductance_gradient(pos)
         force = engine.magnetic_force_ferromagnetic(current, pos)
         print(f"x={pos*1000:4.0f}mm: L={L*1e6:5.1f}µH, dL/dx={dL_dx*1e6:6.2f}µH/m, F={force:6.1f}N")
-
