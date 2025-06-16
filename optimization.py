@@ -4,6 +4,12 @@ Coilgun Optimization Script
 This script iterates through several iterations of possible coilgun designs and configurations
 to optimize coilgun performance. The script will output a csv file of all valid configurations
 along with a config.json file to be used in the electromagnetic coilgun simulation.
+
+Optimization Strategy:
+- Target velocity is a hard requirement (configurations below target are invalid)
+- Multi-objective scoring optimizes for efficiency, energy consumption, design complexity,
+  current management, and practical feasibility
+- Lower scores indicate better configurations among valid configurations
 """
 
 import json
@@ -206,7 +212,6 @@ def build_config_dict(params, materials, wire_spec):
                 "save_field_data": False,
                 "print_progress": False,
                 "save_interval": 100,
-                "suppress_init_output": True  # Suppress physics initialization output during optimization
             }
         }
     }
@@ -252,6 +257,65 @@ def build_config_dict(params, materials, wire_spec):
     return config
 
 
+def calculate_optimization_score(velocity, target_velocity, efficiency, max_current, params, config):
+    """
+    Multi-objective scoring function for coilgun optimization.
+    Lower scores are better. Balances efficiency and practicality.
+    
+    Note: Velocity is a hard requirement (must be >= target_velocity for validity).
+    This function only scores valid configurations based on efficiency and practicality.
+    
+    Args:
+        velocity: Final projectile velocity (m/s) - unused in scoring, only for validation
+        target_velocity: Target velocity (m/s) - unused in scoring, only for validation
+        efficiency: Overall efficiency (%)
+        max_current: Maximum current (A)
+        params: Parameter dictionary
+        config: Configuration dictionary
+    
+    Returns:
+        float: Composite score (lower is better)
+    """
+    # 1. Efficiency score (0-50)
+    # Higher efficiency = lower score (we want high efficiency)
+    efficiency_score = max(0, 50 - efficiency)
+    
+    # 2. Energy consumption score (0-30)
+    # Favor lower energy designs
+    energy_factor = params["voltage"] * params["capacitance"] * 0.5  # E = 0.5*C*V^2
+    energy_score = min(30, energy_factor / 1000)  # Normalize to reasonable range
+    
+    # 3. Complexity penalty (0-20)
+    # Penalize overly complex designs
+    num_stages = params.get("stages", 1)
+    num_layers = config["stages"][0]["coil"]["num_layers"]
+    complexity_score = min(20, (num_stages - 1) * 3 + (num_layers - 1) * 2)
+    
+    # 4. Current management score (0-15)
+    # Penalize excessive current draw
+    current_score = min(15, max(0, max_current - 50) * 0.1)
+    
+    # 5. Practical feasibility (0-10)
+    # Penalize extreme parameter combinations
+    wire_gauge = params["wire_gauge"]
+    turns = params["turns_per_layer"]
+    feasibility_score = 0
+    
+    # Check for unrealistic combinations
+    if wire_gauge <= 16 and turns > 200:  # Thin wire, many turns = heating issues
+        feasibility_score += 5
+    if max_current > 100:  # Very high current
+        feasibility_score += 3
+    if params["voltage"] > 400:  # High voltage safety concerns
+        feasibility_score += 2
+    
+    # Total composite score (no velocity component - that's just a hard requirement)
+    total_score = (efficiency_score + energy_score + 
+                  complexity_score + current_score + feasibility_score)
+    
+    return total_score
+
+
 def simulate_and_score(params, materials, wire_spec, target_velocity):
     """
     Run a full multi-stage simulation for the given parameters and return performance metrics.
@@ -262,15 +326,17 @@ def simulate_and_score(params, materials, wire_spec, target_velocity):
         with open(temp_config_file, "w") as f:
             json.dump(config, f, indent=4)
         sim = MultiStageCoilgunSimulation(temp_config_file)
-        results = sim.run_simulation(save_data=False, verbose=False, show_progress=False)
-          # Extract the key metrics from results
+        results = sim.run_simulation(save_data=False, verbose=False, show_progress=False)        # Extract the key metrics from results
         final_velocity = float(results.get('final_velocity_ms', 0))
         max_current = float(results.get('max_current_A', 0))
         max_force = float(results.get('max_force_N', 0))
         overall_efficiency = float(results.get('overall_efficiency_percent', 0))
         
-        score = (params["voltage"] + params["capacitance"] * 1000 +
-                config["stages"][0]["coil"]["num_layers"] * 100 + max_current * 0.1)
+        # Multi-objective scoring function - lower is better
+        score = calculate_optimization_score(
+            final_velocity, target_velocity, overall_efficiency, 
+            max_current, params, config
+        )
         
         valid = final_velocity >= target_velocity
         
@@ -321,8 +387,7 @@ def optimize_coilgun(params, materials, wire_spec, target_velocity, total_combin
     voltage_min, voltage_max, voltage_step = params["voltage"]
     cap_min, cap_max, cap_step = params["capacitance"]
 
-    # Optimization header
-    print("\n" + "=" * 25)
+    # Optimization header    print("\n" + "=" * 25)
     print("Optimization Process")
     print("=" * 25 + "\n")
     
@@ -375,6 +440,23 @@ def optimize_coilgun(params, materials, wire_spec, target_velocity, total_combin
                                     print(f"Progress: {percent:.1f}%")
     if TQDM_AVAILABLE:
         pbar.close()
+    
+    print("\nOptimization completed!")
+    
+    # Display best configuration details
+    if best_config and best_config.get("valid", False):
+        print(f"\nBest configuration found with score: {best_score:.2f}")
+        # Extract necessary parameters for score explanation
+        best_params = best_config.get("params", {})
+        temp_config = build_config_dict(best_params, materials, wire_spec)
+        explain_score(
+            best_config["velocity"], target_velocity, 
+            best_config["efficiency"], best_config["max_current"],
+            best_params, temp_config, best_score
+        )
+    else:
+        print("\nNo valid configurations found that meet the target velocity.")
+    
     return best_config, results_list
 
 def save_results_to_csv(results_list, filename):
@@ -388,6 +470,58 @@ def save_results_to_csv(results_list, filename):
         writer.writeheader()
         for row in results_list:
             writer.writerow(row)
+
+def explain_score(velocity, target_velocity, efficiency, max_current, params, config, score):
+    """
+    Provide detailed breakdown of optimization score components.
+    """
+    print(f"\n{'='*50}")
+    print("OPTIMIZATION SCORE BREAKDOWN")
+    print(f"{'='*50}")
+    print(f"Total Score: {score:.2f} (lower is better)")
+    print(f"Target Velocity: {target_velocity:.1f} m/s (REQUIRED)")
+    print(f"Achieved Velocity: {velocity:.1f} m/s ({'✓ PASS' if velocity >= target_velocity else '✗ FAIL'})")
+    print(f"Overall Efficiency: {efficiency:.1f}%")
+    print(f"Max Current: {max_current:.1f} A")
+    print(f"Configuration:")
+    print(f"  - Stages: {params.get('stages', 1)}")
+    print(f"  - Wire Gauge: {params['wire_gauge']} AWG")
+    print(f"  - Layers: {config['stages'][0]['coil']['num_layers']}")
+    print(f"  - Turns/Layer: {params['turns_per_layer']}")
+    print(f"  - Voltage: {params['voltage']} V")
+    print(f"  - Capacitance: {params['capacitance']:.3f} F")
+    
+    # Calculate individual score components for breakdown
+    efficiency_score = max(0, 50 - efficiency)
+    energy_factor = params["voltage"] * params["capacitance"] * 0.5
+    energy_score = min(30, energy_factor / 1000)
+    
+    num_stages = params.get("stages", 1)
+    num_layers = config["stages"][0]["coil"]["num_layers"]
+    complexity_score = min(20, (num_stages - 1) * 3 + (num_layers - 1) * 2)
+    
+    current_score = min(15, max(0, max_current - 50) * 0.1)
+    
+    # Calculate feasibility score
+    wire_gauge = params["wire_gauge"]
+    turns = params["turns_per_layer"]
+    feasibility_score = 0
+    if wire_gauge <= 16 and turns > 200:
+        feasibility_score += 5
+    if max_current > 100:
+        feasibility_score += 3
+    if params["voltage"] > 400:
+        feasibility_score += 2
+    
+    print(f"\nScore Components:")
+    print(f"  - Efficiency: {efficiency_score:.1f}/50 (50 - {efficiency:.1f}%)")
+    print(f"  - Energy Consumption: {energy_score:.1f}/30")
+    print(f"  - Design Complexity: {complexity_score:.1f}/20")
+    print(f"  - Current Management: {current_score:.1f}/15")
+    print(f"  - Practical Feasibility: {feasibility_score:.1f}/10")
+    print(f"\nNote: Velocity is a hard requirement, not scored.")
+    print(f"Only configurations meeting target velocity are considered valid.")
+    print(f"{'='*50}")
 
 def main():
     """
