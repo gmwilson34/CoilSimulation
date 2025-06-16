@@ -129,6 +129,39 @@ class Advanced3DCoilgunVisualizer:
         # Animation timing
         self.real_time_start = None
         
+    # Helper ---------------------------------------------------------------
+    def _sanitize_time_series(self, ts_dict):
+        """Return a copy of ts_dict with every entry converted to a 1-D numeric
+        float64 array.  If an entry is an object array that contains a list of
+        per-stage numeric sub-arrays it will be flattened (concatenated).  Any
+        non-array value that can be converted to float is wrapped in a 1-D
+        array.  This guarantees downstream math (diff, interp1d, etc.) sees
+        plain numeric arrays and prevents the 'rubber-band' artefact caused by
+        object dtype data."""
+        clean = {}
+        for key, val in ts_dict.items():
+            if val is None:
+                continue
+            arr = np.asarray(val)
+            if arr.dtype == object:
+                # If it's a scalar object, unwrap it first
+                if arr.ndim == 0:
+                    arr = np.asarray(arr.item())
+                try:
+                    # concatenate list/tuple/arrays of varying length
+                    arr = np.concatenate([np.asarray(a).ravel() for a in arr])
+                except Exception:
+                    # fall back to element-wise conversion (handle strings, scalars, etc.)
+                    try:
+                        arr = np.array([float(x) for x in arr], dtype=float)
+                    except TypeError:
+                        # if still fails, make a 1-D array with the scalar value
+                        arr = np.atleast_1d(arr).astype(float)
+            else:
+                arr = arr.astype(float)
+            clean[key] = arr
+        return clean
+    
     def load_simulation_data(self, results_dir=None):
         """
         Load simulation data from results directory.
@@ -177,13 +210,16 @@ class Advanced3DCoilgunVisualizer:
         csv_file = results_path / "time_series_data.csv"
         
         if npz_file.exists():
-            with np.load(npz_file) as data:
+            with np.load(npz_file, allow_pickle=True) as data:
                 time_series = {key: data[key] for key in data.files}
+            # sanitize
+            time_series = self._sanitize_time_series(time_series)
         elif csv_file.exists():
             try:
                 import pandas as pd
                 df = pd.read_csv(csv_file)
                 time_series = {col: df[col].values for col in df.columns}
+                time_series = self._sanitize_time_series(time_series)
             except ImportError:
                 raise ImportError("pandas required for CSV loading when npz not available")
         else:
@@ -218,13 +254,16 @@ class Advanced3DCoilgunVisualizer:
         csv_file = results_path / "multistage_time_series_data.csv"
         
         if npz_file.exists():
-            with np.load(npz_file) as data:
+            with np.load(npz_file, allow_pickle=True) as data:
                 time_series = {key: data[key] for key in data.files}
+            # Ensure we have plain numeric arrays
+            time_series = self._sanitize_time_series(time_series)
         elif csv_file.exists():
             try:
                 import pandas as pd
                 df = pd.read_csv(csv_file)
                 time_series = {col: df[col].values for col in df.columns}
+                time_series = self._sanitize_time_series(time_series)
             except ImportError:
                 raise ImportError("pandas required for CSV loading when npz not available")
         else:
@@ -237,7 +276,7 @@ class Advanced3DCoilgunVisualizer:
         # Debug position data to check for resets
         if len(position_data) > 100:
             pos_diffs = np.diff(position_data)
-            negative_jumps = pos_diffs < -0.05  # Detect position resets (>5cm backward)
+            negative_jumps = pos_diffs < 0  # Detect any backward jump
             if np.any(negative_jumps):
                 reset_indices = np.where(negative_jumps)[0]
                 print(f"Warning: Detected {len(reset_indices)} position resets in multi-stage data")
@@ -315,13 +354,16 @@ class Advanced3DCoilgunVisualizer:
             csv_file = stage_dir / "time_series_data.csv"
             
             if npz_file.exists():
-                with np.load(npz_file) as data:
+                with np.load(npz_file, allow_pickle=True) as data:
                     stage_time_series = {key: data[key] for key in data.files}
+                # sanitize numeric arrays to avoid object dtype issues
+                stage_time_series = self._sanitize_time_series(stage_time_series)
             elif csv_file.exists():
                 try:
                     import pandas as pd
                     df = pd.read_csv(csv_file)
                     stage_time_series = {col: df[col].values for col in df.columns}
+                    stage_time_series = self._sanitize_time_series(stage_time_series)
                 except ImportError:
                     print(f"Warning: Could not load stage {stage_num} current data (pandas required)")
                     continue
