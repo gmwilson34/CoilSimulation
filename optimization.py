@@ -184,7 +184,7 @@ def build_config_dict(params, materials, wire_spec):
                 "time_span": [0, params["simulation_time"]],
                 "max_step": 1e-6,
                 "tolerance": 1e-9,
-                "method": "RK45"
+                "method": "LSODA"
             },
             "circuit_model": {
                 "switch_resistance": params["switch_resistance"],
