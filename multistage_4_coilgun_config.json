@@ -26,10 +26,10 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 8,
+                "num_layers": 6,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
-                "packing_factor": 0.85
+                "packing_factor": 0.95
             }
         },
         {
@@ -39,10 +39,10 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 8,
+                "num_layers": 6,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
-                "packing_factor": 0.85
+                "packing_factor": 0.95
             }
         },
         {
@@ -52,10 +52,10 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 8,
+                "num_layers": 6,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
-                "packing_factor": 0.85
+                "packing_factor": 0.95
             }
         },
         {
@@ -65,10 +65,10 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 8,
+                "num_layers": 6,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
-                "packing_factor": 0.85
+                "packing_factor": 0.95
             }
         }
     ],
@@ -76,21 +76,21 @@
         "simulation": {
             "time_span": [
                 0,
-                0.1
+                0.05
             ],
             "max_step": 1e-06,
             "tolerance": 1e-09,
-            "method": "LSODA"
+            "method": "RK45"
         },
         "circuit_model": {
-            "switch_resistance": 0.001,
+            "switch_resistance": 0.00001,
             "switch_inductance": 1e-08,
             "parasitic_capacitance": 1e-11,
             "include_skin_effect": true,
             "include_proximity_effect": true
         },
         "magnetic_model": {
-            "calculation_method": "biot_savart",
+            "calculation_method": "exact_elliptic",
             "axial_discretization": 1000,
             "radial_discretization": 100,
             "include_saturation": true,
@@ -104,16 +104,16 @@
             "save_interval": 100
         },
         "capacitor": {
-            "capacitance": 0.3333,
+            "capacitance": 0.075,
             "initial_voltage": 900.0,
-            "esr": 0.01,
+            "esr": 0.0001,
             "esl": 5e-08
         },
         "projectile": {
             "diameter": 0.0508,
             "length": 0.064,
             "material": "Pure_Iron",
-            "initial_position": 0.0,
+            "initial_position": -0.015,
             "initial_velocity": 0.0
         }
     }

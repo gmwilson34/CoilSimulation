@@ -3,13 +3,14 @@ Coilgun Simulation Setup Script
 
 This script collects user inputs and generates appropriate JSON configuration files
 for the electromagnetic coilgun simulation. Supports both single-stage and multi-stage
-coilgun configurations.
+coilgun configurations with advanced physics modeling.
 """
 
 import json
 import os
 import sys
-from typing import Dict, Any, List, Tuple
+import signal
+from typing import Dict, Any, List, Tuple, Optional
 
 
 def load_material_data() -> Dict[str, Any]:
@@ -43,7 +44,7 @@ def create_default_materials() -> Dict[str, Any]:
     }
 
 
-def get_float_input(prompt: str, default: float = None, min_val: float = None, max_val: float = None) -> float:
+def get_float_input(prompt: str, default: Optional[float] = None, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
     """Get validated float input from user"""
     while True:
         try:
@@ -71,7 +72,7 @@ def get_float_input(prompt: str, default: float = None, min_val: float = None, m
             sys.exit(0)
 
 
-def get_int_input(prompt: str, default: int = None, min_val: int = None, max_val: int = None) -> int:
+def get_int_input(prompt: str, default: Optional[int] = None, min_val: Optional[int] = None, max_val: Optional[int] = None) -> int:
     """Get validated integer input from user"""
     while True:
         try:
@@ -99,7 +100,7 @@ def get_int_input(prompt: str, default: int = None, min_val: int = None, max_val
             sys.exit(0)
 
 
-def get_choice_input(prompt: str, choices: List[str], default: str = None) -> str:
+def get_choice_input(prompt: str, choices: List[str], default: Optional[str] = None) -> str:
     """Get validated choice input from user"""
     while True:
         try:
@@ -127,7 +128,7 @@ def get_choice_input(prompt: str, choices: List[str], default: str = None) -> st
             sys.exit(0)
 
 
-def get_yes_no_input(prompt: str, default: bool = None) -> bool:
+def get_yes_no_input(prompt: str, default: Optional[bool] = None) -> bool:
     """Get yes/no input from user"""
     while True:
         try:
@@ -264,11 +265,11 @@ def setup_coil_parameters(materials: Dict[str, Any], stage_info: str = "") -> Di
             "Coil length (m)", 
             default=0.075, min_val=0.01, max_val= 15.0
         ),
-        "wire_gauge_awg": int(get_choice_input(
+        "wire_gauge_awg": get_choice_input(
             "Wire gauge (AWG)", 
             wire_gauges, 
             default="16"
-        )),
+        ),
         "num_layers": get_int_input(
             "Number of wire layers", 
             default=6, min_val=1, max_val=20
@@ -316,7 +317,7 @@ def setup_projectile_parameters(materials: Dict[str, Any]) -> Dict[str, Any]:
         "material": get_choice_input(
             "Projectile material", 
             projectile_materials, 
-            default="Low_Carbon_Steel"
+            default="Pure_Iron"
         ),
         "initial_position": get_float_input(
             "Initial position relative to first coil center (m)", 
@@ -421,14 +422,16 @@ def setup_magnetic_model_parameters() -> Dict[str, Any]:
     print("\n" + "="*50)
     print("MAGNETIC MODEL CONFIGURATION")
     print("="*50)
+    print("Configure the electromagnetic physics engine for accurate coilgun simulation.")
     
-    methods = ["biot_savart", "finite_element", "analytical"]
+    # Enhanced calculation methods from equations.py
+    methods = ["exact_elliptic", "biot_savart", "finite_element", "analytical"]
     
-    return {
+    config = {
         "calculation_method": get_choice_input(
             "Magnetic field calculation method", 
             methods, 
-            default="biot_savart"
+            default="exact_elliptic"
         ),
         "axial_discretization": get_int_input(
             "Axial discretization points", 
@@ -439,14 +442,76 @@ def setup_magnetic_model_parameters() -> Dict[str, Any]:
             default=100, min_val=10, max_val=1000
         ),
         "include_saturation": get_yes_no_input(
-            "Include magnetic saturation?", 
-            default=False
+            "Include magnetic saturation effects (Jiles-Atherton model)?", 
+            default=True
         ),
         "include_hysteresis": get_yes_no_input(
-            "Include magnetic hysteresis?", 
+            "Include magnetic hysteresis (memory effects)?", 
+            default=False
+        ),
+        "include_eddy_currents": get_yes_no_input(
+            "Include eddy current effects (3D modeling)?", 
+            default=True
+        ),
+        "include_skin_effect": get_yes_no_input(
+            "Include frequency-dependent skin effect?", 
+            default=True
+        ),
+        "include_temperature_effects": get_yes_no_input(
+            "Include temperature-dependent material properties?", 
+            default=False
+        ),
+        "include_displacement_current": get_yes_no_input(
+            "Include displacement current effects for fast transients?", 
             default=False
         )
     }
+    
+    # Advanced force calculation options
+    print("\nForce Calculation Options:")
+    print("Configure electromagnetic force components for comprehensive physics modeling.")
+    config["force_components"] = {
+        "reluctance_force": get_yes_no_input(
+            "Include reluctance force (gradient method: F = 0.5*I²*∂L/∂x)?", 
+            default=True
+        ),
+        "lorentz_force": get_yes_no_input(
+            "Include Lorentz force on induced currents (F = ∫J×B dV)?", 
+            default=True
+        ),
+        "maxwell_stress": get_yes_no_input(
+            "Include Maxwell stress tensor force (electromagnetic stress)?", 
+            default=True
+        ),
+        "image_force": get_yes_no_input(
+            "Include magnetic image force (ferromagnetic attraction)?", 
+            default=True
+        ),
+        "eddy_force": get_yes_no_input(
+            "Include eddy current force effects (velocity-dependent damping)?", 
+            default=config["include_eddy_currents"]
+        )
+    }
+    
+    # Enhanced field solver parameters
+    if config["calculation_method"] == "exact_elliptic":
+        print("\nElliptic Integral Solver Options:")
+        config["elliptic_solver"] = {
+            "tolerance": get_float_input(
+                "Elliptic integral tolerance", 
+                default=1e-12, min_val=1e-15, max_val=1e-9
+            ),
+            "max_iterations": get_int_input(
+                "Maximum elliptic solver iterations", 
+                default=100, min_val=10, max_val=1000
+            ),
+            "use_approximation_fallback": get_yes_no_input(
+                "Use approximation fallback for numerical issues?", 
+                default=True
+            )
+        }
+    
+    return config
 
 
 def setup_output_parameters() -> Dict[str, Any]:
@@ -466,7 +531,7 @@ def setup_output_parameters() -> Dict[str, Any]:
         ),
         "save_field_data": get_yes_no_input(
             "Save magnetic field data?", 
-            default=False
+            default=True
         ),
         "print_progress": get_yes_no_input(
             "Print simulation progress?", 
@@ -477,6 +542,166 @@ def setup_output_parameters() -> Dict[str, Any]:
             default=100, min_val=1, max_val=10000
         )
     }
+
+
+def setup_timing_optimization_parameters() -> Dict[str, Any]:
+    """Collect timing optimization configuration parameters for multi-stage operation"""
+    print("\n" + "="*50)
+    print("TIMING OPTIMIZATION CONFIGURATION")
+    print("="*50)
+    print("Configure advanced timing for multi-stage coilgun operation")
+    
+    config: Dict[str, Any] = {
+        "enabled": get_yes_no_input(
+            "Enable timing optimization?", 
+            default=True
+        )
+    }
+    
+    if config["enabled"]:
+        config["pre_charge"] = get_yes_no_input(
+            "Enable pre-charge timing (start charging before projectile arrives)?", 
+            default=True
+        )
+        config["optimal_force_timing"] = get_yes_no_input(
+            "Enable optimal force timing calculation?", 
+            default=True
+        )
+        config["charge_time_factor"] = get_float_input(
+            "Charge time factor (multiples of L/R time constant)", 
+            default=3.0, min_val=1.0, max_val=10.0
+        )
+        config["optimal_force_position"] = get_float_input(
+            "Optimal force position (fraction of coil length)", 
+            default=0.3, min_val=0.1, max_val=0.9
+        )
+        config["turn_off_position"] = get_float_input(
+            "Turn-off position (fraction of coil length)", 
+            default=0.7, min_val=0.5, max_val=1.0
+        )
+        config["velocity_prediction_method"] = get_choice_input(
+            "Velocity prediction method", 
+            ["linear", "quadratic", "exponential"], 
+            default="linear"
+        )
+        config["safety_margin"] = get_float_input(
+            "Timing safety margin (seconds)", 
+            default=1e-6, min_val=1e-9, max_val=1e-3
+        )
+    
+    return config
+
+
+def setup_advanced_physics_parameters() -> Dict[str, Any]:
+    """Collect advanced physics model configuration parameters"""
+    print("\n" + "="*50)
+    print("ADVANCED PHYSICS CONFIGURATION")
+    print("="*50)
+    print("Configure PhD-level electromagnetic physics models for maximum accuracy:")
+    print("• Jiles-Atherton magnetic hysteresis model")
+    print("• 3D eddy current patterns with skin depth effects")
+    print("• Temperature-dependent material properties")
+    print("• Energy conservation validation")
+    
+    config: Dict[str, Any] = {}
+    
+    # Jiles-Atherton hysteresis model parameters
+    if get_yes_no_input("Configure Jiles-Atherton hysteresis model parameters?", default=False):
+        print("\nJiles-Atherton Hysteresis Model:")
+        config["jiles_atherton"] = {
+            "enabled": True,
+            "Ms": get_float_input(
+                "Saturation magnetization Ms (A/m)", 
+                default=1.7e6, min_val=1e5, max_val=5e6
+            ),
+            "a": get_float_input(
+                "Shape parameter 'a' (A/m)", 
+                default=1000.0, min_val=100.0, max_val=10000.0
+            ),
+            "alpha": get_float_input(
+                "Interdomain coupling 'alpha'", 
+                default=1e-3, min_val=1e-6, max_val=1e-1
+            ),
+            "c": get_float_input(
+                "Reversible magnetization fraction 'c'", 
+                default=0.2, min_val=0.0, max_val=1.0
+            ),
+            "k": get_float_input(
+                "Pinning parameter 'k' (A/m)", 
+                default=500.0, min_val=10.0, max_val=5000.0
+            )
+        }
+    else:
+        config["jiles_atherton"] = {"enabled": False}
+    
+    # Eddy current modeling parameters
+    if get_yes_no_input("Configure advanced eddy current modeling?", default=True):
+        print("\nEddy Current Modeling:")
+        config["eddy_currents"] = {
+            "enabled": True,
+            "3d_modeling": get_yes_no_input(
+                "Enable 3D eddy current modeling?", 
+                default=False
+            ),
+            "skin_depth_calculation": get_yes_no_input(
+                "Calculate frequency-dependent skin depth?", 
+                default=True
+            ),
+            "proximity_effects": get_yes_no_input(
+                "Include proximity effects between conductors?", 
+                default=False
+            ),
+            "frequency_analysis": get_yes_no_input(
+                "Perform frequency domain analysis?", 
+                default=True
+            ),
+            "eddy_damping_factor": get_float_input(
+                "Eddy current damping factor", 
+                default=1.0, min_val=0.1, max_val=10.0
+            )
+        }
+    else:
+        config["eddy_currents"] = {"enabled": False}
+    
+    # Thermal modeling parameters
+    if get_yes_no_input("Configure thermal modeling?", default=False):
+        print("\nThermal Modeling:")
+        config["thermal"] = {
+            "enabled": True,
+            "ambient_temperature": get_float_input(
+                "Ambient temperature (K)", 
+                default=293.15, min_val=200.0, max_val=400.0
+            ),
+            "thermal_time_constant": get_float_input(
+                "Thermal time constant (s)", 
+                default=1.0, min_val=0.1, max_val=100.0
+            ),
+            "temperature_dependent_resistance": get_yes_no_input(
+                "Enable temperature-dependent resistance?", 
+                default=True
+            ),
+            "temperature_dependent_permeability": get_yes_no_input(
+                "Enable temperature-dependent permeability?", 
+                default=False
+            )
+        }
+    else:
+        config["thermal"] = {"enabled": False}
+    
+    # Energy conservation validation
+    energy_conservation_enabled = get_yes_no_input(
+        "Enable energy conservation validation?", 
+        default=True
+    )
+    config["energy_conservation"] = {
+        "enabled": energy_conservation_enabled,
+        "tolerance": get_float_input(
+            "Energy conservation tolerance", 
+            default=1e-6, min_val=1e-9, max_val=1e-3
+        ) if energy_conservation_enabled else 1e-6
+    }
+    
+    return config
 
 
 def create_single_stage_configuration(materials: Dict[str, Any]) -> Dict[str, Any]:
@@ -492,6 +717,14 @@ def create_single_stage_configuration(materials: Dict[str, Any]) -> Dict[str, An
         "magnetic_model": setup_magnetic_model_parameters(),
         "output": setup_output_parameters()
     }
+    
+    # Add advanced physics options
+    if get_yes_no_input("Configure advanced physics models?", default=True):
+        config["advanced_physics"] = setup_advanced_physics_parameters()
+    
+    # Add timing optimization (useful even for single stage)
+    if get_yes_no_input("Configure timing optimization?", default=False):
+        config["timing_optimization"] = setup_timing_optimization_parameters()
     
     return config
 
@@ -544,6 +777,14 @@ def create_multi_stage_configuration(materials: Dict[str, Any]) -> Dict[str, Any
     
     # Setup projectile (always shared across stages)
     config["shared"]["projectile"] = setup_projectile_parameters(materials)
+    
+    # Setup advanced physics (shared across all stages for consistency)
+    if get_yes_no_input("Configure advanced physics models for all stages?", default=True):
+        config["shared"]["advanced_physics"] = setup_advanced_physics_parameters()
+    
+    # Setup timing optimization (essential for multi-stage operation)
+    print("\nTiming optimization is recommended for multi-stage operation:")
+    config["shared"]["timing_optimization"] = setup_timing_optimization_parameters()
     
     # Setup configurations for each group
     group_configs = {}
@@ -619,12 +860,129 @@ def create_configuration() -> Dict[str, Any]:
         return create_single_stage_configuration(materials)
 
 
-def save_configuration(config: Dict[str, Any], filename: str) -> None:
-    """Save configuration to JSON file"""
+def validate_configuration(config: Dict[str, Any]) -> bool:
+    """Validate configuration for physics engine compatibility"""
+    print("\n" + "="*50)
+    print("CONFIGURATION VALIDATION")
+    print("="*50)
+    
+    valid = True
+    warnings = []
+    errors = []
+    
+    # Validate physics engine compatibility
     try:
+        # Check if we can import physics engine
+        from equations import CoilgunPhysicsEngine
+        
+        # For multi-stage configurations, create a test single-stage config
+        test_config = config
+        if config.get("multi_stage", {}).get("enabled", False):
+            # Create a test single-stage configuration from the first stage
+            test_config = create_test_single_stage_config(config)
+        
+        # Create temporary file for validation
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+            json.dump(test_config, temp_file, indent=4)
+            temp_filename = temp_file.name
+        
+        try:
+            # Try to initialize physics engine
+            test_engine = CoilgunPhysicsEngine(temp_filename)
+            print("✓ Physics engine initialization: PASSED")
+            
+            # Validate advanced physics features
+            if hasattr(test_engine, 'enable_advanced_physics') and test_engine.enable_advanced_physics:
+                print("✓ Advanced physics integration: ENABLED")
+                
+                # Check specific features
+                features = [
+                    ("Magnetic saturation", getattr(test_engine, 'saturation_enabled', False)),
+                    ("Eddy currents", getattr(test_engine, 'eddy_current_enabled', False)),
+                    ("Hysteresis effects", getattr(test_engine, 'hysteresis_enabled', False)),
+                    ("Thermal effects", getattr(test_engine, 'thermal_enabled', False)),
+                    ("Energy conservation", getattr(test_engine, 'energy_conservation_enabled', True))
+                ]
+                
+                for feature_name, enabled in features:
+                    status = "ENABLED" if enabled else "DISABLED"
+                    print(f"  • {feature_name}: {status}")
+            
+        except Exception as e:
+            errors.append(f"Physics engine initialization failed: {e}")
+            valid = False
+        finally:
+            # Clean up temporary file
+            import os
+            os.unlink(temp_filename)
+            
+    except ImportError as e:
+        errors.append(f"Cannot import physics engine: {e}")
+        valid = False
+    
+    # Validate configuration structure
+    if config.get("multi_stage", {}).get("enabled", False):
+        num_stages = config["multi_stage"]["num_stages"]
+        if num_stages < 2:
+            errors.append("Multi-stage configuration requires at least 2 stages")
+            valid = False
+        elif len(config.get("stages", [])) != num_stages:
+            errors.append(f"Stage count mismatch: expected {num_stages}, got {len(config.get('stages', []))}")
+            valid = False
+    
+    # Check for essential parameters
+    essential_params = ["simulation", "coil", "projectile", "capacitor"]
+    for param in essential_params:
+        if config.get("multi_stage", {}).get("enabled", False):
+            # Multi-stage: check shared or stage-specific
+            if param not in config.get("shared", {}) and not any(param in stage for stage in config.get("stages", [])):
+                warnings.append(f"Missing {param} configuration in multi-stage setup")
+        else:
+            # Single-stage: check directly
+            if param not in config:
+                errors.append(f"Missing essential parameter: {param}")
+                valid = False
+    
+    # Report results
+    if errors:
+        print("\n❌ VALIDATION ERRORS:")
+        for error in errors:
+            print(f"  • {error}")
+    
+    if warnings:
+        print("\n⚠  VALIDATION WARNINGS:")
+        for warning in warnings:
+            print(f"  • {warning}")
+    
+    if valid and not errors:
+        print("\n✅ Configuration validation: PASSED")
+        print("Configuration is compatible with the physics engine.")
+    
+    return valid
+
+
+def save_configuration(config: Dict[str, Any], filename: str) -> None:
+    """Save configuration to JSON file with validation"""
+    try:
+        # Validate configuration before saving
+        if not validate_configuration(config):
+            if not get_yes_no_input("\nConfiguration has validation errors. Save anyway?", default=False):
+                print("Configuration not saved.")
+                return
+        
         with open(filename, 'w') as f:
             json.dump(config, f, indent=4)
         print(f"\nConfiguration saved to: {filename}")
+        
+        # Test load the configuration
+        try:
+            with open(filename, 'r') as f:
+                test_config = json.load(f)
+            print("✓ Configuration file is valid JSON and can be loaded.")
+        except Exception as e:
+            print(f"⚠  Warning: Saved file may have issues: {e}")
+            
     except Exception as e:
         print(f"Error saving configuration: {e}")
 
@@ -770,4 +1128,39 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nUnhandled error: {e}")
         sys.exit(1)
+
+
+def create_test_single_stage_config(multi_stage_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a test single-stage configuration from a multi-stage configuration
+    for validation purposes.
+    
+    Args:
+        multi_stage_config: Multi-stage configuration dictionary
+        
+    Returns:
+        Single-stage configuration dictionary that can be used by physics engine
+    """
+    if not multi_stage_config.get("multi_stage", {}).get("enabled", False):
+        # Already single-stage
+        return multi_stage_config
+    
+    # Create single-stage config from first stage
+    test_config = {}
+    
+    # Copy shared settings to top level
+    shared = multi_stage_config.get("shared", {})
+    for key, value in shared.items():
+        test_config[key] = value
+    
+    # Get first stage configuration
+    stages = multi_stage_config.get("stages", [])
+    if stages:
+        first_stage = stages[0]
+        # Copy stage-specific settings to top level
+        for key, value in first_stage.items():
+            if key not in ["stage_id", "group_id"]:
+                test_config[key] = value
+    
+    return test_config
 

@@ -24,8 +24,10 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from pathlib import Path
 import json
 import sys
+import signal
 from scipy.integrate import odeint
 from scipy.interpolate import griddata
+from typing import Optional, Tuple, List, Any, Union
 
 from equations import CoilgunPhysicsEngine
 from solve import CoilgunSimulation
@@ -44,6 +46,7 @@ except ImportError:
 class CoilgunFieldVisualizer:
     """
     Advanced magnetic field and force visualization for coilgun systems.
+    Enhanced with new physics data visualization capabilities.
     """
     
     def __init__(self, physics_engine):
@@ -55,6 +58,446 @@ class CoilgunFieldVisualizer:
         """
         self.physics = physics_engine
         self.fig_size = (15, 10)
+    
+    def plot_enhanced_physics_analysis(self, results, save_path=None):
+        """
+        Create comprehensive visualization of enhanced physics analysis results.
+        
+        Args:
+            results: Results dictionary from enhanced simulation
+            save_path: Path to save the plot
+        """
+        # Create figure with multiple subplots for comprehensive analysis
+        fig = plt.figure(figsize=(20, 16))
+        gs = fig.add_gridspec(4, 3, hspace=0.3, wspace=0.3)
+        
+        # Main title
+        fig.suptitle('Enhanced Electromagnetic Physics Analysis', fontsize=16, fontweight='bold')
+        
+        # Check if we have time data
+        if 'time' not in results or len(results['time']) == 0:
+            print("No time data available for enhanced physics analysis")
+            plt.close()
+            return
+        
+        t_ms = np.array(results['time']) * 1000  # Convert to ms
+        
+        # 1. Force decomposition plot
+        ax1 = fig.add_subplot(gs[0, 0])
+        
+        # Plot force components
+        if 'force_gradient' in results:
+            ax1.plot(t_ms, results['force_gradient'], 'b-', linewidth=2, label='Gradient Force', alpha=0.8)
+        if 'force_reluctance' in results:
+            ax1.plot(t_ms, results['force_reluctance'], 'g--', linewidth=2, label='Reluctance Force', alpha=0.8)
+        if 'force_eddy' in results:
+            ax1.plot(t_ms, results['force_eddy'], 'r:', linewidth=2, label='Eddy Current Force', alpha=0.8)
+        if 'force_lorentz' in results:
+            ax1.plot(t_ms, results['force_lorentz'], 'm-.', linewidth=1.5, label='Lorentz Force', alpha=0.8)
+        if 'force_maxwell' in results:
+            ax1.plot(t_ms, results['force_maxwell'], 'c--', linewidth=1.5, label='Maxwell Stress', alpha=0.8)
+        if 'force_total' in results:
+            ax1.plot(t_ms, results['force_total'], 'k-', linewidth=3, label='Total Force', alpha=0.9)
+        
+        ax1.set_xlabel('Time (ms)')
+        ax1.set_ylabel('Force (N)')
+        ax1.set_title('Force Component Decomposition')
+        ax1.legend(fontsize=8)
+        ax1.grid(True, alpha=0.3)
+        
+        # 2. Eddy current analysis
+        ax2 = fig.add_subplot(gs[0, 1])
+        if 'eddy_current_magnitude' in results and np.any(results['eddy_current_magnitude'] > 0):
+            ax2.plot(t_ms, results['eddy_current_magnitude'], 'r-', linewidth=2, label='Eddy Current')
+            ax2_twin = ax2.twinx()
+            if 'skin_depth' in results:
+                finite_skin = np.where(results['skin_depth'] < 1e6, results['skin_depth'] * 1000, np.nan)
+                ax2_twin.plot(t_ms, finite_skin, 'b--', linewidth=1.5, label='Skin Depth', alpha=0.7)
+                ax2_twin.set_ylabel('Skin Depth (mm)', color='b')
+        
+        ax2.set_xlabel('Time (ms)')
+        ax2.set_ylabel('Eddy Current (A)', color='r')
+        ax2.set_title('Eddy Current Effects')
+        ax2.grid(True, alpha=0.3)
+        
+        # 3. Power loss analysis
+        ax3 = fig.add_subplot(gs[0, 2])
+        if 'power_loss_resistive' in results:
+            ax3.plot(t_ms, results['power_loss_resistive'], 'g-', linewidth=2, label='Resistive Loss', alpha=0.8)
+        if 'power_loss_eddy' in results:
+            ax3.plot(t_ms, results['power_loss_eddy'], 'r-', linewidth=2, label='Eddy Loss', alpha=0.8)
+        if 'power_mechanical' in results:
+            ax3.plot(t_ms, results['power_mechanical'], 'b-', linewidth=2, label='Mechanical Power', alpha=0.8)
+        
+        ax3.set_xlabel('Time (ms)')
+        ax3.set_ylabel('Power (W)')
+        ax3.set_title('Power Analysis')
+        ax3.legend(fontsize=9)
+        ax3.grid(True, alpha=0.3)
+        
+        # 4. Energy conservation tracking
+        ax4 = fig.add_subplot(gs[1, 0])
+        if 'energy_capacitor' in results and 'energy_kinetic' in results:
+            E_cap = results['energy_capacitor']
+            E_kin = results['energy_kinetic']
+            E_total = E_cap + E_kin
+            
+            ax4.plot(t_ms, E_cap, 'b-', linewidth=2, label='Capacitor Energy', alpha=0.8)
+            ax4.plot(t_ms, E_kin, 'r-', linewidth=2, label='Kinetic Energy', alpha=0.8)
+            ax4.plot(t_ms, E_total, 'k--', linewidth=2, label='Total Energy', alpha=0.8)
+            
+            # Add energy conservation error if available
+            if 'energy_conservation' in results:
+                ax4_twin = ax4.twinx()
+                ax4_twin.plot(t_ms, results['energy_conservation'] * 100, 'orange', linewidth=1, alpha=0.6)
+                ax4_twin.set_ylabel('Energy Error (%)', color='orange')
+        
+        ax4.set_xlabel('Time (ms)')
+        ax4.set_ylabel('Energy (J)')
+        ax4.set_title('Energy Conservation')
+        ax4.legend(fontsize=9)
+        ax4.grid(True, alpha=0.3)
+        
+        # 5. Magnetic field and saturation analysis
+        ax5 = fig.add_subplot(gs[1, 1])
+        if 'magnetic_field' in results:
+            ax5.plot(t_ms, results['magnetic_field'], 'purple', linewidth=2, label='B-field', alpha=0.8)
+            
+            # Add saturation analysis if available
+            if 'saturation_factor' in results:
+                ax5_twin = ax5.twinx()
+                ax5_twin.plot(t_ms, results['saturation_factor'], 'orange', linewidth=1.5, label='Saturation Factor', alpha=0.7)
+                ax5_twin.set_ylabel('Saturation Factor', color='orange')
+                ax5_twin.set_ylim(0, 1.1)
+        
+        ax5.set_xlabel('Time (ms)')
+        ax5.set_ylabel('Magnetic Field (T)')
+        ax5.set_title('Magnetic Field & Saturation')
+        ax5.grid(True, alpha=0.3)
+        
+        # 6. Frequency analysis
+        ax6 = fig.add_subplot(gs[1, 2])
+        if 'frequency_content' in results and np.any(results['frequency_content'] > 0):
+            ax6.plot(t_ms, results['frequency_content'], 'cyan', linewidth=2, label='Peak Frequency', alpha=0.8)
+            ax6.set_ylabel('Frequency (Hz)')
+            ax6.set_title('Frequency Content Analysis')
+        else:
+            # Current frequency spectrum
+            if 'current' in results and len(results['current']) > 100:
+                current_data = results['current']
+                dt = results['time'][1] - results['time'][0]
+                freqs = np.fft.fftfreq(len(current_data), dt)
+                fft_current = np.abs(np.fft.fft(current_data))
+                
+                # Plot positive frequencies only
+                pos_freqs = freqs[freqs > 0][:len(freqs)//4]  # Show first quarter
+                pos_fft = fft_current[freqs > 0][:len(freqs)//4]
+                
+                ax6.semilogy(pos_freqs, pos_fft, 'cyan', linewidth=1.5, alpha=0.8)
+                ax6.set_ylabel('Current FFT Magnitude')
+                ax6.set_title('Current Frequency Spectrum')
+        
+        ax6.set_xlabel('Time (ms)' if 'frequency_content' in results else 'Frequency (Hz)')
+        ax6.grid(True, alpha=0.3)
+        
+        # 7. Inductance and gradient analysis
+        ax7 = fig.add_subplot(gs[2, 0])
+        if 'inductance' in results:
+            ax7.plot(t_ms, results['inductance'] * 1000, 'green', linewidth=2, label='Inductance', alpha=0.8)
+            
+            if 'inductance_gradient' in results:
+                ax7_twin = ax7.twinx()
+                ax7_twin.plot(t_ms, results['inductance_gradient'] * 1000, 'brown', linewidth=1.5, label='dL/dx', alpha=0.7)
+                ax7_twin.set_ylabel('dL/dx (mH/m)', color='brown')
+        
+        ax7.set_xlabel('Time (ms)')
+        ax7.set_ylabel('Inductance (mH)')
+        ax7.set_title('Inductance & Gradient')
+        ax7.grid(True, alpha=0.3)
+        
+        # 8. Force vs position analysis
+        ax8 = fig.add_subplot(gs[2, 1])
+        if 'position' in results and 'force_total' in results:
+            pos_mm = np.array(results['position']) * 1000  # Convert to mm
+            ax8.plot(pos_mm, results['force_total'], 'k-', linewidth=2, alpha=0.8)
+            ax8.set_xlabel('Position (mm)')
+            ax8.set_ylabel('Force (N)')
+            ax8.set_title('Force vs Position')
+            ax8.grid(True, alpha=0.3)
+        
+        # 9. Efficiency and performance metrics
+        ax9 = fig.add_subplot(gs[2, 2])
+        if 'energy_capacitor' in results and 'energy_kinetic' in results:
+            E_cap = results['energy_capacitor']
+            E_kin = results['energy_kinetic']
+            
+            # Calculate efficiency over time
+            efficiency = np.where(E_cap > 0, E_kin / (E_cap[0] - E_cap + E_kin) * 100, 0)
+            ax9.plot(t_ms, efficiency, 'purple', linewidth=2, alpha=0.8)
+            ax9.set_xlabel('Time (ms)')
+            ax9.set_ylabel('Efficiency (%)')
+            ax9.set_title('Instantaneous Efficiency')
+            ax9.grid(True, alpha=0.3)
+        
+        # 10. Temperature analysis if available
+        ax10 = fig.add_subplot(gs[3, 0])
+        if 'temperature_rise' in results and np.any(results['temperature_rise'] > 0):
+            ax10.plot(t_ms, results['temperature_rise'], 'red', linewidth=2, alpha=0.8)
+            ax10.set_xlabel('Time (ms)')
+            ax10.set_ylabel('Temperature Rise (°C)')
+            ax10.set_title('Temperature Analysis')
+        else:
+            # Power loss-based temperature estimate
+            if 'power_loss_resistive' in results:
+                # Simple thermal model: ΔT ∝ ∫P dt
+                thermal_capacity = 1000  # J/K (rough estimate)
+                temp_rise = np.cumsum(results['power_loss_resistive']) * (t_ms[1] - t_ms[0]) / 1000 / thermal_capacity
+                ax10.plot(t_ms, temp_rise, 'red', linewidth=2, alpha=0.8)
+                ax10.set_xlabel('Time (ms)')
+                ax10.set_ylabel('Est. Temperature Rise (°C)')
+                ax10.set_title('Estimated Temperature Rise')
+        
+        ax10.grid(True, alpha=0.3)
+        
+        # 11. Velocity and acceleration analysis
+        ax11 = fig.add_subplot(gs[3, 1])
+        if 'velocity' in results:
+            ax11.plot(t_ms, results['velocity'], 'blue', linewidth=2, label='Velocity', alpha=0.8)
+            
+            # Calculate acceleration from velocity
+            if len(results['velocity']) > 1:
+                dt = results['time'][1] - results['time'][0]
+                acceleration = np.gradient(results['velocity'], dt)
+                ax11_twin = ax11.twinx()
+                ax11_twin.plot(t_ms, acceleration, 'red', linewidth=1.5, label='Acceleration', alpha=0.7)
+                ax11_twin.set_ylabel('Acceleration (m/s²)', color='red')
+        
+        ax11.set_xlabel('Time (ms)')
+        ax11.set_ylabel('Velocity (m/s)', color='blue')
+        ax11.set_title('Velocity & Acceleration')
+        ax11.grid(True, alpha=0.3)
+        
+        # 12. Current and charge analysis
+        ax12 = fig.add_subplot(gs[3, 2])
+        if 'current' in results:
+            ax12.plot(t_ms, results['current'], 'blue', linewidth=2, label='Current', alpha=0.8)
+            
+            if 'charge' in results:
+                ax12_twin = ax12.twinx()
+                ax12_twin.plot(t_ms, results['charge'], 'green', linewidth=1.5, label='Charge', alpha=0.7)
+                ax12_twin.set_ylabel('Charge (C)', color='green')
+        
+        ax12.set_xlabel('Time (ms)')
+        ax12.set_ylabel('Current (A)', color='blue')
+        ax12.set_title('Current & Charge')
+        ax12.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Enhanced physics analysis plot saved to: {save_path}")
+        else:
+            plt.show()
+        
+        plt.close()
+    
+    def plot_force_decomposition_detailed(self, results, save_path=None):
+        """
+        Create detailed force decomposition visualization.
+        
+        Args:
+            results: Results dictionary with force component data
+            save_path: Path to save the plot
+        """
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig.suptitle('Detailed Force Decomposition Analysis', fontsize=16, fontweight='bold')
+        
+        if 'time' not in results or len(results['time']) == 0:
+            print("No time data available for force decomposition plot")
+            return
+        
+        t_ms = np.array(results['time']) * 1000
+        
+        # 1. Force components over time
+        ax1 = axes[0, 0]
+        force_components = ['force_gradient', 'force_reluctance', 'force_lorentz', 'force_maxwell', 'force_eddy']
+        colors = ['blue', 'green', 'red', 'magenta', 'orange']
+        labels = ['Gradient', 'Reluctance', 'Lorentz', 'Maxwell Stress', 'Eddy Current']
+        
+        for component, color, label in zip(force_components, colors, labels):
+            if component in results and np.any(np.abs(results[component]) > 1e-9):
+                ax1.plot(t_ms, results[component], color=color, linewidth=2, label=label, alpha=0.8)
+        
+        if 'force_total' in results:
+            ax1.plot(t_ms, results['force_total'], 'k-', linewidth=3, label='Total', alpha=0.9)
+        
+        ax1.set_xlabel('Time (ms)')
+        ax1.set_ylabel('Force (N)')
+        ax1.set_title('Force Components vs Time')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # 2. Force components vs position
+        ax2 = axes[0, 1]
+        if 'position' in results:
+            pos_mm = np.array(results['position']) * 1000
+            
+            for component, color, label in zip(force_components, colors, labels):
+                if component in results and np.any(np.abs(results[component]) > 1e-9):
+                    ax2.plot(pos_mm, results[component], color=color, linewidth=2, label=label, alpha=0.8)
+            
+            if 'force_total' in results:
+                ax2.plot(pos_mm, results['force_total'], 'k-', linewidth=3, label='Total', alpha=0.9)
+        
+        ax2.set_xlabel('Position (mm)')
+        ax2.set_ylabel('Force (N)')
+        ax2.set_title('Force Components vs Position')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # 3. Relative force contribution
+        ax3 = axes[1, 0]
+        if 'force_total' in results and np.any(np.abs(results['force_total']) > 1e-9):
+            total_force = np.abs(results['force_total'])
+            max_total_idx = np.argmax(total_force)
+            
+            if max_total_idx < len(total_force) and total_force[max_total_idx] > 1e-9:
+                contributions = []
+                component_labels = []
+                
+                for component, label in zip(force_components, labels):
+                    if component in results:
+                        contribution = np.abs(results[component][max_total_idx]) / total_force[max_total_idx] * 100
+                        if contribution > 0.1:  # Show only significant contributions
+                            contributions.append(contribution)
+                            component_labels.append(label)
+                
+                if contributions:
+                    ax3.pie(contributions, labels=component_labels, autopct='%1.1f%%', startangle=90)
+                    ax3.set_title(f'Force Contribution at Peak Force\n(t = {t_ms[max_total_idx]:.2f} ms)')
+        
+        # 4. Force efficiency over time
+        ax4 = axes[1, 1]
+        if 'force_total' in results and 'current' in results:
+            current = results['current']
+            force = results['force_total']
+            
+            # Force per unit current (force efficiency)
+            force_efficiency = np.where(np.abs(current) > 1e-6, force / current, 0)
+            
+            ax4.plot(t_ms, force_efficiency, 'purple', linewidth=2, alpha=0.8)
+            ax4.set_xlabel('Time (ms)')
+            ax4.set_ylabel('Force/Current (N/A)')
+            ax4.set_title('Force Efficiency (Force per Current)')
+            ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Force decomposition plot saved to: {save_path}")
+        else:
+            plt.show()
+        
+        plt.close()
+    
+    def plot_electromagnetic_field_analysis(self, results, save_path=None):
+        """
+        Create comprehensive electromagnetic field analysis visualization.
+        
+        Args:
+            results: Results dictionary with field data
+            save_path: Path to save the plot
+        """
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        fig.suptitle('Electromagnetic Field Analysis', fontsize=16, fontweight='bold')
+        
+        if 'time' not in results or len(results['time']) == 0:
+            print("No time data available for field analysis plot")
+            return
+        
+        t_ms = np.array(results['time']) * 1000
+        
+        # 1. Magnetic field strength
+        ax1 = axes[0, 0]
+        if 'magnetic_field' in results:
+            ax1.plot(t_ms, results['magnetic_field'], 'purple', linewidth=2, alpha=0.8)
+            ax1.set_xlabel('Time (ms)')
+            ax1.set_ylabel('Magnetic Field (T)')
+            ax1.set_title('Magnetic Field Strength')
+            ax1.grid(True, alpha=0.3)
+        
+        # 2. Field gradient
+        ax2 = axes[0, 1]
+        if 'magnetic_field' in results and 'position' in results:
+            # Calculate field gradient numerically
+            B = results['magnetic_field']
+            pos = results['position']
+            
+            if len(B) > 1 and len(pos) > 1:
+                dB_dx = np.gradient(B, pos)
+                ax2.plot(t_ms, dB_dx, 'brown', linewidth=2, alpha=0.8)
+                ax2.set_xlabel('Time (ms)')
+                ax2.set_ylabel('dB/dx (T/m)')
+                ax2.set_title('Magnetic Field Gradient')
+                ax2.grid(True, alpha=0.3)
+        
+        # 3. Inductance variation
+        ax3 = axes[0, 2]
+        if 'inductance' in results:
+            L_mH = np.array(results['inductance']) * 1000
+            ax3.plot(t_ms, L_mH, 'green', linewidth=2, alpha=0.8)
+            ax3.set_xlabel('Time (ms)')
+            ax3.set_ylabel('Inductance (mH)')
+            ax3.set_title('Coil Inductance')
+            ax3.grid(True, alpha=0.3)
+        
+        # 4. Magnetic energy
+        ax4 = axes[1, 0]
+        if 'inductance' in results and 'current' in results:
+            L = results['inductance']
+            I = results['current']
+            E_magnetic = 0.5 * L * I**2
+            
+            ax4.plot(t_ms, E_magnetic, 'red', linewidth=2, alpha=0.8)
+            ax4.set_xlabel('Time (ms)')
+            ax4.set_ylabel('Magnetic Energy (J)')
+            ax4.set_title('Magnetic Field Energy')
+            ax4.grid(True, alpha=0.3)
+        
+        # 5. Permeability effects
+        ax5 = axes[1, 1]
+        if 'permeability_effective' in results:
+            mu_eff = results['permeability_effective']
+            ax5.plot(t_ms, mu_eff, 'orange', linewidth=2, alpha=0.8)
+            ax5.set_xlabel('Time (ms)')
+            ax5.set_ylabel('Effective Permeability')
+            ax5.set_title('Material Permeability')
+            ax5.grid(True, alpha=0.3)
+        
+        # 6. Saturation analysis
+        ax6 = axes[1, 2]
+        if 'saturation_factor' in results:
+            saturation = results['saturation_factor']
+            ax6.plot(t_ms, saturation, 'cyan', linewidth=2, alpha=0.8)
+            ax6.axhline(y=0.95, color='red', linestyle='--', alpha=0.7, label='Saturation Threshold')
+            ax6.set_xlabel('Time (ms)')
+            ax6.set_ylabel('Saturation Factor')
+            ax6.set_title('Magnetic Saturation')
+            ax6.set_ylim(0, 1.1)
+            ax6.legend()
+            ax6.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Electromagnetic field analysis plot saved to: {save_path}")
+        else:
+            plt.show()
+        
+        plt.close()
         
     def calculate_bfield_map_2d(self, current, z_range=None, r_range=None, 
                                 num_z=100, num_r=50, include_projectile=True, 
@@ -81,8 +524,8 @@ class CoilgunFieldVisualizer:
             r_range = [0, 3*self.physics.coil_outer_radius]
         
         # Create coordinate grids
-        z_points = np.linspace(z_range[0], z_range[1], num_z)
-        r_points = np.linspace(r_range[0], r_range[1], num_r)
+        z_points = np.linspace(z_range[0], z_range[1], num_z, retstep=False)
+        r_points = np.linspace(r_range[0], r_range[1], num_r, retstep=False)
         Z, R = np.meshgrid(z_points, r_points)
         
         # Initialize field arrays
@@ -95,7 +538,7 @@ class CoilgunFieldVisualizer:
         # Calculate field using superposition of current loops
         # Discretize coil into current loops
         num_loops = max(50, int(self.physics.total_turns / 5))
-        loop_positions = np.linspace(0, self.physics.coil_length, num_loops)
+        loop_positions = np.linspace(0, self.physics.coil_length, num_loops, retstep=False)
         current_per_loop = current * self.physics.total_turns / num_loops
         
         for i, z in enumerate(z_points):
@@ -155,9 +598,9 @@ class CoilgunFieldVisualizer:
             y_range = [-max_r, max_r]
         
         # Create 3D coordinate grids
-        z_points = np.linspace(z_range[0], z_range[1], num_z)
-        x_points = np.linspace(x_range[0], x_range[1], num_x)
-        y_points = np.linspace(y_range[0], y_range[1], num_y)
+        z_points = np.linspace(z_range[0], z_range[1], num_z, retstep=False)
+        x_points = np.linspace(x_range[0], x_range[1], num_x, retstep=False)
+        y_points = np.linspace(y_range[0], y_range[1], num_y, retstep=False)
         
         Z, X, Y = np.meshgrid(z_points, x_points, y_points, indexing='ij')
         
@@ -204,7 +647,7 @@ class CoilgunFieldVisualizer:
     def _biot_savart_total_field(self, z, r, current):
         """Calculate total field at (z,r) using superposition of current loops."""
         num_loops = max(50, int(self.physics.total_turns / 5))
-        loop_positions = np.linspace(0, self.physics.coil_length, num_loops)
+        loop_positions = np.linspace(0, self.physics.coil_length, num_loops, retstep=False)
         current_per_loop = current * self.physics.total_turns / num_loops
         
         bz_total = 0
@@ -376,7 +819,7 @@ class CoilgunFieldVisualizer:
             Coil coordinates for 3D plotting
         """
         # Create helical coil path
-        turns = np.linspace(0, num_turns_visual, 1000)
+        turns = np.linspace(0, num_turns_visual, 1000, retstep=False)
         theta = 2 * np.pi * turns
         
         # Axial position
@@ -409,7 +852,7 @@ class CoilgunFieldVisualizer:
             Projectile mesh coordinates
         """
         # Create cylindrical projectile
-        theta = np.linspace(0, 2*np.pi, 20)
+        theta = np.linspace(0, 2*np.pi, 20, retstep=False)
         z_proj = np.array([position - self.physics.proj_length, position])
         
         # Create surface coordinates
@@ -440,7 +883,7 @@ class CoilgunFieldVisualizer:
         
         # Create figure
         fig = plt.figure(figsize=(16, 12))
-        ax = fig.add_subplot(111, projection='3d')
+        ax = fig.add_subplot(111, projection='3d')  # type: ignore
         
         # Plot field magnitude as volume rendering (simplified with scatter)
         if True:  # Volume rendering
@@ -459,7 +902,7 @@ class CoilgunFieldVisualizer:
             mask = b_sample > threshold
             
             scatter = ax.scatter(x_sample[mask] * 1000, y_sample[mask] * 1000, z_sample[mask] * 1000,
-                               c=b_sample[mask] * 1000, cmap='plasma', alpha=0.3, s=10)
+                               c=b_sample[mask] * 1000, cmap='plasma', alpha=0.3, s=10)  # type: ignore
             
             # Add colorbar
             cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, aspect=20)
@@ -474,7 +917,7 @@ class CoilgunFieldVisualizer:
             
             # Field lines from coil inner radius
             num_lines = 12
-            theta_start = np.linspace(0, 2*np.pi, num_lines, endpoint=False)
+            theta_start = np.linspace(0, 2*np.pi, num_lines, endpoint=False, retstep=False)
             
             for theta in theta_start:
                 for z_start in [0.01, self.physics.coil_length/2, self.physics.coil_length - 0.01]:
@@ -498,7 +941,8 @@ class CoilgunFieldVisualizer:
             coil_lines = self.create_3d_coil_geometry(num_turns_visual=8)
             
             for i, coil_line in enumerate(coil_lines):
-                color = plt.cm.copper(i / len(coil_lines))
+                # Use available matplotlib colormap
+                color = plt.cm.get_cmap('copper')(i / len(coil_lines))
                 ax.plot(coil_line[:, 0] * 1000, coil_line[:, 1] * 1000, coil_line[:, 2] * 1000,
                        color=color, linewidth=3, alpha=0.8)
         
@@ -507,13 +951,13 @@ class CoilgunFieldVisualizer:
             print("Adding projectile geometry...")
             x_proj, y_proj, z_proj = self.create_3d_projectile_geometry(projectile_position)
             
-            ax.plot_surface(x_proj * 1000, y_proj * 1000, z_proj * 1000,
+            ax.plot_surface(x_proj * 1000, y_proj * 1000, z_proj * 1000,  # type: ignore
                            color='red', alpha=0.8, linewidth=0)
         
         # Set labels and title
         ax.set_xlabel('X (mm)', fontsize=12)
         ax.set_ylabel('Y (mm)', fontsize=12)
-        ax.set_zlabel('Z (mm)', fontsize=12)
+        ax.set_zlabel('Z (mm)', fontsize=12)  # type: ignore
         ax.set_title(f'3D Coilgun Magnetic Field Visualization (I = {current:.0f} A)', 
                      fontsize=14, fontweight='bold')
         
@@ -522,12 +966,12 @@ class CoilgunFieldVisualizer:
             self.physics.coil_outer_radius * 1000,
             self.physics.coil_length * 1000
         )
-        ax.set_xlim([-max_range*1.2, max_range*1.2])
-        ax.set_ylim([-max_range*1.2, max_range*1.2])
-        ax.set_zlim([-max_range*0.3, max_range*1.8])
+        ax.set_xlim(-max_range*1.2, max_range*1.2)
+        ax.set_ylim(-max_range*1.2, max_range*1.2)
+        ax.set_zlim(-max_range*0.3, max_range*1.8)  # type: ignore
         
         # Improve viewing angle
-        ax.view_init(elev=20, azim=45)
+        ax.view_init(elev=20, azim=45)  # type: ignore
         
         plt.tight_layout()
         
@@ -624,14 +1068,14 @@ class CoilgunFieldVisualizer:
             save_path: Path to save the plot (optional)
         """
         fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection='3d')
+        ax = fig.add_subplot(111, projection='3d')  # type: ignore
         
         Z = field_data['Z'] * 1000  # Convert to mm
         R = field_data['R'] * 1000
         B_mag = field_data['B_magnitude'] * 1000  # Convert to mT
         
         # Create 3D surface plot
-        surf = ax.plot_surface(Z, R, B_mag, cmap='plasma', alpha=0.8, 
+        surf = ax.plot_surface(Z, R, B_mag, cmap='plasma', alpha=0.8,   # type: ignore
                               linewidth=0, antialiased=True)
         
         # Add contour lines at the base
@@ -639,7 +1083,7 @@ class CoilgunFieldVisualizer:
         
         ax.set_xlabel('Axial Position (mm)')
         ax.set_ylabel('Radial Position (mm)')
-        ax.set_zlabel('Magnetic Field Magnitude (mT)')
+        ax.set_zlabel('Magnetic Field Magnitude (mT)')  # type: ignore
         ax.set_title(f'3D Magnetic Field Distribution (I = {field_data["current"]:.0f} A)')
         
         # Add colorbar
@@ -663,16 +1107,16 @@ class CoilgunFieldVisualizer:
         
         # Create color map for different currents
         if len(current_values) > 1:
-            colors = plt.cm.viridis(np.linspace(0, 1, len(current_values)))
+            colors = plt.cm.get_cmap('viridis')(np.linspace(0, 1, len(current_values), retstep=False))
         else:
             colors = ['blue']
         
         # Axial positions for field calculation
-        z_points = np.linspace(-self.physics.coil_length, 2*self.physics.coil_length, 300)
+        z_points = np.linspace(-self.physics.coil_length, 2*self.physics.coil_length, 300, retstep=False)
         z_mm = z_points * 1000  # Convert to mm
         
         # Positions for force calculation (projectile range)
-        positions = np.linspace(-0.05, self.physics.coil_length + 0.05, 200)
+        positions = np.linspace(-0.05, self.physics.coil_length + 0.05, 200, retstep=False)
         positions_mm = positions * 1000
         
         # Plot field and force for each current value
@@ -762,13 +1206,13 @@ class CoilgunFieldVisualizer:
         
         # Select frames for animation
         num_frames = min(50, len(time_data) // 20)  # Reduce frames for 3D
-        frame_indices = np.linspace(0, len(time_data)-1, num_frames, dtype=int)
+        frame_indices = np.linspace(0, len(time_data)-1, num_frames, dtype=int, retstep=False)
         
         print(f"Creating 3D animation with {num_frames} frames...")
         
         # Create figure
         fig = plt.figure(figsize=(16, 12))
-        ax = fig.add_subplot(111, projection='3d')
+        ax = fig.add_subplot(111, projection='3d')  # type: ignore
         
         # Pre-render coil geometry
         coil_lines = self.create_3d_coil_geometry(num_turns_visual=6)
@@ -781,48 +1225,55 @@ class CoilgunFieldVisualizer:
             position = position_data[idx]
             time = time_data[idx]
             
+            artists = []
+            
             # Plot coil
             for i, coil_line in enumerate(coil_lines):
-                color = plt.cm.copper(i / len(coil_lines))
-                ax.plot(coil_line[:, 0] * 1000, coil_line[:, 1] * 1000, coil_line[:, 2] * 1000,
-                       color=color, linewidth=2, alpha=0.7)
+                color = plt.cm.get_cmap('copper')(i / len(coil_lines))
+                line = ax.plot(coil_line[:, 0] * 1000, coil_line[:, 1] * 1000, coil_line[:, 2] * 1000,
+                              color=color, linewidth=2, alpha=0.7)
+                artists.extend(line)
             
             # Plot projectile
             x_proj, y_proj, z_proj = self.create_3d_projectile_geometry(position)
-            ax.plot_surface(x_proj * 1000, y_proj * 1000, z_proj * 1000,
-                           color='red', alpha=0.9, linewidth=0)
+            surf = ax.plot_surface(x_proj * 1000, y_proj * 1000, z_proj * 1000,  # type: ignore
+                                  color='red', alpha=0.9, linewidth=0)
+            artists.append(surf)
             
             # Add some field lines around projectile
             if current > 10:  # Only show field lines when current is significant
                 # Simple field visualization - radial lines from coil center
-                theta_lines = np.linspace(0, 2*np.pi, 8, endpoint=False)
+                theta_lines = np.linspace(0, 2*np.pi, 8, endpoint=False, retstep=False)
                 for theta in theta_lines:
-                    r_line = np.linspace(0, self.physics.coil_outer_radius * 1.5, 20)
+                    r_line = np.linspace(0, self.physics.coil_outer_radius * 1.5, 20, retstep=False)
                     x_line = r_line * np.cos(theta) * 1000
                     y_line = r_line * np.sin(theta) * 1000
                     z_line = np.full_like(r_line, self.physics.coil_center * 1000)
                     
                     # Color by field strength (approximate)
-                    colors = plt.cm.viridis(r_line / (self.physics.coil_outer_radius * 1.5))
+                    colors = plt.cm.get_cmap('viridis')(r_line / (self.physics.coil_outer_radius * 1.5))
                     for i in range(len(r_line)-1):
-                        ax.plot([x_line[i], x_line[i+1]], [y_line[i], y_line[i+1]], 
-                               [z_line[i], z_line[i+1]], color=colors[i], alpha=0.6)
+                        line = ax.plot([x_line[i], x_line[i+1]], [y_line[i], y_line[i+1]], 
+                                      [z_line[i], z_line[i+1]], color=colors[i], alpha=0.6)
+                        artists.extend(line)
             
             # Set labels and title
             ax.set_xlabel('X (mm)')
             ax.set_ylabel('Y (mm)')
-            ax.set_zlabel('Z (mm)')
+            ax.set_zlabel('Z (mm)')  # type: ignore
             ax.set_title(f'3D Coilgun Animation - t={time*1000:.1f}ms, I={current:.0f}A, v={simulation_results.results["velocity"][idx]:.1f}m/s')
             
             # Set consistent axis limits
             max_range = max(self.physics.coil_outer_radius * 1000, self.physics.coil_length * 1000)
-            ax.set_xlim([-max_range*1.2, max_range*1.2])
-            ax.set_ylim([-max_range*1.2, max_range*1.2])
-            ax.set_zlim([-max_range*0.3, max_range*1.8])
+            ax.set_xlim(-max_range*1.2, max_range*1.2)
+            ax.set_ylim(-max_range*1.2, max_range*1.2)
+            ax.set_zlim(-max_range*0.3, max_range*1.8)  # type: ignore
             
-            ax.view_init(elev=15, azim=frame_idx * 2)  # Slowly rotate view
+            ax.view_init(elev=15, azim=frame_idx * 2)  # type: ignore  # Slowly rotate view
+            
+            return artists
         
-        anim = FuncAnimation(fig, animate, frames=num_frames, interval=interval, blit=False)
+        anim = FuncAnimation(fig, animate, frames=num_frames, interval=interval, blit=False)  # type: ignore
         
         if save_path:
             print("Saving 3D animation (this may take a while)...")
@@ -852,7 +1303,7 @@ class CoilgunFieldVisualizer:
         
         # Select frames for animation
         num_frames = min(100, len(time_data) // 10)  # Limit to 100 frames
-        frame_indices = np.linspace(0, len(time_data)-1, num_frames, dtype=int)
+        frame_indices = np.linspace(0, len(time_data)-1, num_frames, dtype=int, retstep=False)
         
         # Pre-calculate field data for efficiency
         print("Pre-calculating field frames for animation...")
@@ -892,17 +1343,21 @@ class CoilgunFieldVisualizer:
             Bz = field_data['Bz'] * 1000
             B_mag = field_data['B_magnitude'] * 1000
             
+            artists = []
+            
             # Plot field magnitude
             im1 = ax1.contourf(Z, R, B_mag, levels=30, cmap='plasma')
             ax1.set_title(f'|B| Field (t = {frame["time"]*1000:.1f} ms)')
             ax1.set_xlabel('Position (mm)')
             ax1.set_ylabel('Radius (mm)')
+            artists.extend(im1.collections)
             
             # Plot axial field
             im2 = ax2.contourf(Z, R, Bz, levels=30, cmap='RdBu_r')
             ax2.set_title(f'Bz Field (I = {frame["current"]:.0f} A)')
             ax2.set_xlabel('Position (mm)')
             ax2.set_ylabel('Radius (mm)')
+            artists.extend(im2.collections)
             
             # Add coil and projectile geometry
             for ax in [ax1, ax2]:
@@ -913,30 +1368,35 @@ class CoilgunFieldVisualizer:
             current_history = [f['current'] for f in field_frames[:frame_idx+1]]
             time_history = [f['time']*1000 for f in field_frames[:frame_idx+1]]
             
-            ax3.plot(time_history, current_history, 'b-', linewidth=2)
-            ax3.axvline(frame['time']*1000, color='red', linestyle='--')
+            line1 = ax3.plot(time_history, current_history, 'b-', linewidth=2)
+            line1_marker = ax3.axvline(frame['time']*1000, color='red', linestyle='--')
             ax3.set_xlabel('Time (ms)')
             ax3.set_ylabel('Current (A)')
             ax3.set_title('Current vs Time')
             ax3.grid(True, alpha=0.3)
+            artists.extend(line1)
+            artists.append(line1_marker)
             
             # Plot position vs time
             position_history = [f['position']*1000 for f in field_frames[:frame_idx+1]]
             
-            ax4.plot(time_history, position_history, 'g-', linewidth=2)
-            ax4.axvline(frame['time']*1000, color='red', linestyle='--')
-            ax4.axhline(0, color='black', linestyle=':', alpha=0.5, label='Coil entrance')
-            ax4.axhline(self.physics.coil_center*1000, color='orange', linestyle=':', alpha=0.5, label='Coil center')
+            line2 = ax4.plot(time_history, position_history, 'g-', linewidth=2)
+            line2_marker = ax4.axvline(frame['time']*1000, color='red', linestyle='--')
+            line2_ref1 = ax4.axhline(0, color='black', linestyle=':', alpha=0.5, label='Coil entrance')
+            line2_ref2 = ax4.axhline(self.physics.coil_center*1000, color='orange', linestyle=':', alpha=0.5, label='Coil center')
             ax4.set_xlabel('Time (ms)')
             ax4.set_ylabel('Position (mm)')
             ax4.set_title('Projectile Position vs Time')
             ax4.grid(True, alpha=0.3)
             ax4.legend()
+            artists.extend(line2)
+            artists.extend([line2_marker, line2_ref1, line2_ref2])
             
             plt.tight_layout()
+            return artists
         
         anim = FuncAnimation(fig, animate, frames=len(field_frames), 
-                           interval=interval, blit=False, repeat=True)
+                           interval=interval, blit=False, repeat=True)  # type: ignore
         
         if save_path:
             anim.save(save_path, writer='pillow', fps=1000//interval)
@@ -977,9 +1437,59 @@ class CoilgunFieldVisualizer:
         ax.add_patch(projectile)
 
 
+def create_enhanced_physics_visualizations(time_series_data, output_dir, visualizer):
+    """
+    Create enhanced physics visualization plots for new data structure.
+    
+    Args:
+        time_series_data: Enhanced time series data with physics components
+        output_dir: Directory to save visualizations
+        visualizer: CoilgunFieldVisualizer instance
+    """
+    print("Creating enhanced physics visualizations...")
+    
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+    
+    # Create comprehensive enhanced physics analysis plot
+    if time_series_data and len(time_series_data.get('time', [])) > 0:
+        print("  Creating comprehensive physics analysis...")
+        try:
+            visualizer.plot_enhanced_physics_analysis(
+                time_series_data, 
+                save_path=output_path / "enhanced_physics_analysis.png"
+            )
+        except Exception as e:
+            print(f"  Warning: Enhanced physics analysis failed: {e}")
+        
+        # Create detailed force decomposition plot
+        print("  Creating force decomposition analysis...")
+        try:
+            visualizer.plot_force_decomposition_detailed(
+                time_series_data,
+                save_path=output_path / "force_decomposition_detailed.png"
+            )
+        except Exception as e:
+            print(f"  Warning: Force decomposition analysis failed: {e}")
+        
+        # Create electromagnetic field analysis
+        print("  Creating electromagnetic field analysis...")
+        try:
+            visualizer.plot_electromagnetic_field_analysis(
+                time_series_data,
+                save_path=output_path / "electromagnetic_field_analysis.png"
+            )
+        except Exception as e:
+            print(f"  Warning: Electromagnetic field analysis failed: {e}")
+        
+        print("  Enhanced physics visualizations completed!")
+    else:
+        print("  No time series data available for enhanced physics visualization")
+
 def create_multistage_visualizations(config_file, time_series_data, summary_data, output_dir, visualizer):
     """
     Create specialized visualizations for multi-stage coilgun results.
+    Enhanced with new physics data visualization.
     
     Args:
         config_file: Path to multi-stage configuration file
@@ -1000,6 +1510,10 @@ def create_multistage_visualizations(config_file, time_series_data, summary_data
     
     num_stages = config["multi_stage"]["num_stages"]
     stage_transitions = time_series_data.get('stage_transitions', [])
+    
+    # NEW: Create enhanced physics visualizations first
+    print("Creating enhanced physics analysis plots...")
+    create_enhanced_physics_visualizations(time_series_data, output_path, visualizer)
     
     # 1. Create aggregated time series plots with stage markers
     print("Creating multi-stage time series plots...")
@@ -1405,7 +1919,7 @@ def create_stage_performance_summary(summary_data, output_path):
 def create_comprehensive_visualization_suite(config_file, simulation_results=None, 
                                            output_dir="comprehensive_visualizations"):
     """
-    Create a comprehensive suite of visualizations including 3D field lines and projectile motion.
+    Create a comprehensive suite of visualizations including enhanced physics analysis.
     
     Args:
         config_file: Path to coilgun configuration file
@@ -1422,11 +1936,16 @@ def create_comprehensive_visualization_suite(config_file, simulation_results=Non
     physics = CoilgunPhysicsEngine(config_file)
     visualizer = CoilgunFieldVisualizer(physics)
     
+    # NEW: Create enhanced physics visualizations if simulation results available
+    if simulation_results is not None and hasattr(simulation_results, 'results'):
+        print("\n0. Creating enhanced physics analysis...")
+        create_enhanced_physics_visualizations(simulation_results.results, output_path, visualizer)
+    
     # Extract actual current values from simulation if available
     currents = [100, 300, 500]  # Default values
     current_labels = ["100A", "300A", "500A"]
     
-    if simulation_results is not None and simulation_results.results['current'] is not None:
+    if simulation_results is not None and hasattr(simulation_results, 'results') and simulation_results.results.get('current') is not None:
         current_data = simulation_results.results['current']
         if len(current_data) > 0:
             max_current = np.max(np.abs(current_data))
@@ -1756,11 +2275,13 @@ def load_simulation_from_results(results_dir):
             time_series_data = {}
             with open(csv_file, 'r') as f:
                 reader = csv.DictReader(f)
-                data_lists = {fieldname: [] for fieldname in reader.fieldnames}
-                for row in reader:
-                    for key, value in row.items():
-                        data_lists[key].append(float(value))
-                time_series_data = {key: np.array(values) for key, values in data_lists.items()}
+                fieldnames = reader.fieldnames
+                if fieldnames is not None:
+                    data_lists = {fieldname: [] for fieldname in fieldnames}
+                    for row in reader:
+                        for key, value in row.items():
+                            data_lists[key].append(float(value))
+                    time_series_data = {key: np.array(values) for key, values in data_lists.items()}
     
     return str(config_file), time_series_data, summary_data, is_multi_stage
 
@@ -1932,7 +2453,7 @@ def main():
                 # Create simulation object to use existing plotting methods
                 sim = CoilgunSimulation(config_file)
                 
-                # Map CSV column names to expected result keys
+                # Map CSV column names to expected result keys (enhanced with new physics data)
                 csv_to_result_mapping = {
                     'time_s': 'time',
                     'charge_C': 'charge', 
@@ -1943,13 +2464,38 @@ def main():
                     'inductance_H': 'inductance',
                     'power_W': 'power',
                     'energy_capacitor_J': 'energy_capacitor',
-                    'energy_kinetic_J': 'energy_kinetic'
+                    'energy_kinetic_J': 'energy_kinetic',
+                    # Enhanced physics data mapping
+                    'force_gradient': 'force_gradient',
+                    'force_reluctance': 'force_reluctance', 
+                    'force_lorentz': 'force_lorentz',
+                    'force_maxwell': 'force_maxwell',
+                    'force_eddy': 'force_eddy',
+                    'force_total': 'force_total',
+                    'eddy_current_magnitude': 'eddy_current_magnitude',
+                    'skin_depth': 'skin_depth',
+                    'power_loss_resistive': 'power_loss_resistive',
+                    'power_loss_eddy': 'power_loss_eddy',
+                    'power_mechanical': 'power_mechanical',
+                    'magnetic_field': 'magnetic_field',
+                    'inductance_gradient': 'inductance_gradient',
+                    'saturation_factor': 'saturation_factor',
+                    'permeability_effective': 'permeability_effective',
+                    'energy_conservation': 'energy_conservation',
+                    'frequency_content': 'frequency_content',
+                    'temperature_rise': 'temperature_rise'
                 }
                 
                 # Populate results with loaded data
                 for csv_key, result_key in csv_to_result_mapping.items():
                     if csv_key in time_series_data:
                         sim.results[result_key] = time_series_data[csv_key]
+                
+                # Also handle direct numpy array format (from .npz files) 
+                # that may have different key names
+                for key in time_series_data.keys():
+                    if key not in csv_to_result_mapping and key not in sim.results:
+                        sim.results[key] = time_series_data[key]
                 
                 # Create detailed plots using existing methods
                 print(f"Creating detailed plots in: {output_dir}/")
@@ -1998,6 +2544,9 @@ def main():
         print("Generated visualizations:")
         
         if is_multi_stage:
+            print("- Enhanced electromagnetic physics analysis plots")
+            print("- Detailed force decomposition analysis")
+            print("- Electromagnetic field analysis with saturation tracking")
             print("- Multi-stage time series plots with stage transitions")
             print("- Velocity progression through stages")
             print("- Efficiency comparison by stage")
@@ -2011,6 +2560,14 @@ def main():
             if time_series_data is None:
                 print("- Basic field visualizations")
         else:
+            print("- Enhanced electromagnetic physics analysis plots")
+            print("- Detailed force decomposition with component breakdown")
+            print("- Electromagnetic field analysis with saturation and permeability tracking")
+            print("- Energy conservation and efficiency analysis")
+            print("- Eddy current effects and skin depth analysis")
+            print("- Power loss decomposition (resistive vs eddy)")
+            print("- Frequency content analysis")
+            print("- Temperature rise estimation")
             print("- Simulation result plots (if time series data available)")
             print("- 2D magnetic field contour plots")
             print("- 3D field surface plots") 
@@ -2140,11 +2697,11 @@ def create_stage_comparison_field_plot(stage_currents, stage_labels, output_path
     
     # Axial positions for field calculation
     z_points = np.linspace(-visualizer.physics.coil_length * 0.5, 
-                          visualizer.physics.coil_length * 1.5, 300)
+                          visualizer.physics.coil_length * 1.5, 300, retstep=False)
     z_mm = z_points * 1000  # Convert to mm
     
     # Color map for stages
-    colors = plt.cm.viridis(np.linspace(0, 1, len(stage_currents)))
+    colors = plt.cm.get_cmap('viridis')(np.linspace(0, 1, len(stage_currents), retstep=False))
     
     # Plot 1: On-axis magnetic field for each stage
     max_field = 0
@@ -2175,7 +2732,7 @@ def create_stage_comparison_field_plot(stage_currents, stage_labels, output_path
     ax1.axvline(visualizer.physics.coil_center * 1000, color='orange', linestyle=':', alpha=0.7, label='Coil center')
     
     # Plot 2: Force comparison for each stage
-    positions = np.linspace(-0.05, visualizer.physics.coil_length + 0.05, 200)
+    positions = np.linspace(-0.05, visualizer.physics.coil_length + 0.05, 200, retstep=False)
     positions_mm = positions * 1000
     
     max_force = 0

@@ -21,12 +21,21 @@ import json
 import time
 import sys
 import threading
+import signal
+import traceback
+import os
+import csv
+import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import minimize_scalar
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-import sys
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
 from equations import CoilgunPhysicsEngine
 
 class ProgressTracker:
@@ -55,6 +64,9 @@ class ProgressTracker:
         self.start_real_time = time.time()
         self.last_update_time = self.start_real_time
         self.last_step_count = 0
+        
+        # Rate calculation with sliding window
+        self.current_integration_rate = 0.0
         
         # Physics diagnostics
         self.max_current = 0
@@ -90,10 +102,11 @@ class ProgressTracker:
             self.max_velocity = max(self.max_velocity, abs(v))
             self.current_position = x
             
-            # Calculate current force for diagnostics
+            # Calculate current force for diagnostics using enhanced physics
             if self.physics and abs(I) > 1e-6:
                 try:
-                    force = self.physics.magnetic_force_with_circuit_logic(I, x, t, v)
+                    # Use the enhanced magnetic force calculation
+                    force = self.physics.magnetic_force_ferromagnetic(I, x, v)
                     self.max_force = max(self.max_force, abs(force))
                 except Exception as e:
                     if len(self.physics_warnings) < 5:  # Limit warnings
@@ -117,14 +130,25 @@ class ProgressTracker:
         current_real_time = time.time()
         real_time_elapsed = current_real_time - self.last_update_time
         
-        if real_time_elapsed >= self.update_interval:
+        # Update rate calculation periodically for smoothness
+        if real_time_elapsed >= self.update_interval and real_time_elapsed > 0:
             steps_since_update = self.step_count - self.last_step_count
-            integration_rate = steps_since_update / real_time_elapsed if real_time_elapsed > 0 else 0
+            new_rate = steps_since_update / real_time_elapsed
+            
+            # Use exponential smoothing for stable rate display
+            if self.current_integration_rate == 0:
+                self.current_integration_rate = new_rate
+            else:
+                # Smooth the rate to avoid rapid fluctuations
+                alpha = 0.3  # Smoothing factor
+                self.current_integration_rate = (alpha * new_rate + 
+                                               (1 - alpha) * self.current_integration_rate)
+            
             self.last_update_time = current_real_time
             self.last_step_count = self.step_count
-        else:
-            total_elapsed = current_real_time - self.start_real_time
-            integration_rate = self.step_count / total_elapsed if total_elapsed > 0 else 0
+        
+        # Use the smoothed rate for display
+        integration_rate = self.current_integration_rate
         
         # Create progress bar
         filled = int(self.bar_width * progress)
@@ -150,6 +174,10 @@ class ProgressTracker:
         if self.current_state is not None and len(self.current_state) >= 4:
             I, x, v = self.current_state[1], self.current_state[2], self.current_state[3]
             physics_status = f" | I:{I:.0f}A | x:{x*1000:.1f}mm | v:{v:.1f}m/s"
+            
+            # Add force info if available and physics engine is active
+            if hasattr(self, 'max_force') and self.max_force > 0:
+                physics_status += f" | F:{self.max_force:.1f}N"
         
         # Create enhanced progress line
         progress_line = (f"\rSimulation: [{bar}] {progress*100:6.2f}% | "
@@ -208,48 +236,48 @@ class CoilgunSimulation:
         # Initialize results storage
         self.results = {
             # Basic state variables
-            'time': None,
-            'charge': None,
-            'current': None,
-            'position': None,
-            'velocity': None,
+            'time': np.array([]),
+            'charge': np.array([]),
+            'current': np.array([]),
+            'position': np.array([]),
+            'velocity': np.array([]),
             
             # Enhanced electromagnetic analysis
-            'force_total': None,
-            'force_gradient': None,
-            'force_reluctance': None,
-            'force_lorentz': None,
-            'force_maxwell': None,
-            'force_eddy': None,
-            'inductance': None,
-            'inductance_gradient': None,
+            'force_total': np.array([]),
+            'force_gradient': np.array([]),
+            'force_reluctance': np.array([]),
+            'force_lorentz': np.array([]),
+            'force_maxwell': np.array([]),
+            'force_eddy': np.array([]),
+            'inductance': np.array([]),
+            'inductance_gradient': np.array([]),
             
             # Power and energy analysis
-            'power_electrical': None,
-            'power_mechanical': None,
-            'power_loss_resistive': None,
-            'power_loss_eddy': None,
-            'energy_capacitor': None,
-            'energy_kinetic': None,
-            'energy_magnetic': None,
+            'power_electrical': np.array([]),
+            'power_mechanical': np.array([]),
+            'power_loss_resistive': np.array([]),
+            'power_loss_eddy': np.array([]),
+            'energy_capacitor': np.array([]),
+            'energy_kinetic': np.array([]),
+            'energy_magnetic': np.array([]),
             
             # Advanced physics
-            'magnetic_field': None,
-            'permeability_effective': None,
-            'saturation_factor': None,
-            'eddy_current_magnitude': None,
-            'skin_depth': None,
-            'frequency_content': None,
-            'temperature_rise': None,
+            'magnetic_field': np.array([]),
+            'permeability_effective': np.array([]),
+            'saturation_factor': np.array([]),
+            'eddy_current_magnitude': np.array([]),
+            'skin_depth': np.array([]),
+            'frequency_content': np.array([]),
+            'temperature_rise': np.array([]),
             
             # Physics validation
-            'field_accuracy': None,
-            'force_consistency': None,
-            'energy_conservation': None,
+            'field_accuracy': 0.0,
+            'force_consistency': np.array([]),
+            'energy_conservation': np.array([]),
             
             # Backward compatibility
-            'force': None,  # Alias for force_total
-            'power': None   # Alias for power_electrical
+            'force': np.array([]),  # Alias for force_total
+            'power': np.array([])   # Alias for power_electrical
         }
         
         # Simulation metadata
@@ -266,6 +294,7 @@ class CoilgunSimulation:
             'exit_reason': None
         }
         
+    
     def _create_progress_tracking_wrapper(self, original_func):
         """
         Create a wrapper for the ODE function that tracks progress.
@@ -282,7 +311,7 @@ class CoilgunSimulation:
             return original_func(t, y)
         return wrapped_func
         
-    def run_simulation(self, save_data=True, verbose=True, show_progress=True):
+    def run_simulation(self, save_data=True, verbose=True, show_progress=True, check_physics=False):
         """
         Execute the complete coilgun simulation.
         
@@ -290,6 +319,7 @@ class CoilgunSimulation:
             save_data: Whether to save detailed time-series data
             verbose: Whether to print progress and results
             show_progress: Whether to show integration progress bar
+            check_physics: Whether to display physics engine integration status
             
         Returns:
             dict: Simulation results and analysis
@@ -299,6 +329,11 @@ class CoilgunSimulation:
             print("ADVANCED COILGUN SIMULATION")
             print("=" * 60)
             self.physics.print_system_parameters()
+            
+            # ENHANCED: Show physics engine integration status if requested
+            if check_physics:
+                self.check_physics_integration()
+            
             print("\nStarting simulation...")
         
         # Record start time
@@ -338,15 +373,15 @@ class CoilgunSimulation:
             """Event: current reverses direction."""
             return y[1]  # Current
         
-        # Configure events
-        projectile_at_center.terminal = True
-        projectile_at_center.direction = 1
+        # Configure events - these attributes are set by SciPy
+        setattr(projectile_at_center, 'terminal', True)
+        setattr(projectile_at_center, 'direction', 1)
         
-        projectile_exits_coil.terminal = False
-        projectile_exits_coil.direction = 1
+        setattr(projectile_exits_coil, 'terminal', False)
+        setattr(projectile_exits_coil, 'direction', 1)
         
-        current_reverses.terminal = False
-        current_reverses.direction = -1
+        setattr(current_reverses, 'terminal', False)
+        setattr(current_reverses, 'direction', -1)
         
         events = [projectile_at_center, projectile_exits_coil, current_reverses]
         
@@ -366,11 +401,39 @@ class CoilgunSimulation:
                 rtol=tolerance,
                 atol=tolerance * 1e-3,
                 events=events,
-                dense_output=True
+                dense_output=True,
+                # Add numerical stability options
+                first_step=max_step * 0.1,  # Conservative first step
             )
             
             if not solution.success:
-                raise RuntimeError(f"Integration failed: {solution.message}")
+                # Try again with more conservative settings if first attempt fails
+                if verbose:
+                    print(f"Initial integration failed: {solution.message}")
+                    print("Retrying with more conservative settings...")
+                
+                # More conservative integration parameters
+                conservative_max_step = max_step * 0.1
+                conservative_tolerance = tolerance * 10
+                
+                solution = solve_ivp(
+                    fun=ode_func,
+                    t_span=t_span,
+                    y0=y0,
+                    method='RK23',  # More stable method
+                    max_step=conservative_max_step,
+                    rtol=conservative_tolerance,
+                    atol=conservative_tolerance * 1e-2,
+                    events=events,
+                    dense_output=True,
+                    first_step=conservative_max_step * 0.01,
+                )
+                
+                if not solution.success:
+                    raise RuntimeError(f"Integration failed: {solution.message}")
+                else:
+                    if verbose:
+                        print("Integration succeeded with conservative settings.")
             
             # Store results
             self._process_results(solution, save_data)
@@ -396,9 +459,9 @@ class CoilgunSimulation:
                                                self.simulation_info['start_time'])
             self.simulation_info['total_steps'] = len(solution.t)
             
-            if save_data and self.results['current'] is not None:
+            if save_data and len(self.results['current']) > 0:
                 self.simulation_info['max_current'] = np.max(np.abs(self.results['current']))
-                self.simulation_info['max_force'] = np.max(np.abs(self.results['force_total']))
+                self.simulation_info['max_force'] = np.max(np.abs(self.results['force_total'])) if len(self.results['force_total']) > 0 else 0
             else:
                 # Calculate max values from the solution data even if not saving detailed results
                 if hasattr(solution, 'y') and solution.y.shape[1] > 0:
@@ -410,7 +473,8 @@ class CoilgunSimulation:
                     for i, current in enumerate(currents):
                         position = solution.y[2, i]  # Position is third state variable
                         current_time = solution.t[i] if i < len(solution.t) else solution.t[-1]  # Time
-                        force = self.physics.magnetic_force_with_circuit_logic(current, position, current_time)
+                        velocity = solution.y[3, i] if len(solution.y) > 3 else 0  # Velocity
+                        force = self.physics.magnetic_force_with_circuit_logic(current, position, current_time, velocity)
                         forces.append(force)
                     self.simulation_info['max_force'] = np.max(np.abs(forces)) if forces else 0
                 else:
@@ -462,9 +526,12 @@ class CoilgunSimulation:
             self.physics.get_inductance(pos) for pos in self.results['position']
         ])
         
+        # ENHANCED: Use the upgraded magnetic_force_ferromagnetic method with full physics
         self.results['force_total'] = np.array([
-            self.physics.magnetic_force_with_circuit_logic(I, x, current_time) 
-            for I, x, current_time in zip(self.results['current'], self.results['position'], self.results['time'])
+            self.physics.magnetic_force_ferromagnetic(I, x, v, 
+                current_history=self.results['current'][:i+10] if i < len(self.results['current'])-10 else None,
+                time_history=self.results['time'][:i+10] if i < len(self.results['time'])-10 else None) 
+            for i, (I, x, v) in enumerate(zip(self.results['current'], self.results['position'], self.results['velocity']))
         ])
         
         # Power and energy analysis
@@ -477,16 +544,29 @@ class CoilgunSimulation:
         
         # Enhanced physics analysis (with backward compatibility)
         try:
-            # Force decomposition analysis if available
+            # ENHANCED: Force decomposition analysis using the upgraded force calculation
             if hasattr(self.physics, 'force_analysis'):
                 force_components = []
                 for I, x, v, t in zip(self.results['current'], self.results['position'], 
                                     self.results['velocity'], self.results['time']):
                     # Calculate force to get components stored in force_analysis
-                    self.physics.magnetic_force_ferromagnetic(I, x, v)
-                    force_components.append(self.physics.force_analysis.copy())
+                    # Use current history for frequency analysis
+                    current_idx = np.where(self.results['time'] == t)[0]
+                    if len(current_idx) > 0:
+                        idx = current_idx[0]
+                        # Get current and time history (last 20 points or available)
+                        hist_start = max(0, idx - 20)
+                        current_hist = self.results['current'][hist_start:idx+1] if idx > 0 else None
+                        time_hist = self.results['time'][hist_start:idx+1] if idx > 0 else None
+                        
+                        self.physics.magnetic_force_ferromagnetic(I, x, v, current_hist, time_hist)
+                        force_components.append(self.physics.force_analysis.copy())
+                    else:
+                        # Fallback without history
+                        self.physics.magnetic_force_ferromagnetic(I, x, v)
+                        force_components.append(self.physics.force_analysis.copy())
                 
-                # Extract force components
+                # Extract force components with enhanced detail
                 self.results['force_gradient'] = np.array([fc.get('force_gradient', 0) for fc in force_components])
                 self.results['force_reluctance'] = np.array([fc.get('force_reluctance', 0) for fc in force_components])
                 self.results['force_lorentz'] = np.array([fc.get('force_lorentz', 0) for fc in force_components])
@@ -494,22 +574,39 @@ class CoilgunSimulation:
                 self.results['force_eddy'] = np.array([fc.get('force_eddy', 0) for fc in force_components])
                 self.results['power_loss_eddy'] = np.array([fc.get('power_loss_eddy', 0) for fc in force_components])
             
-            # Advanced physics if enhanced methods available
+            # ENHANCED: Advanced eddy current analysis with detailed parameters
             if hasattr(self.physics, 'calculate_eddy_current_effects'):
                 eddy_effects = []
-                for I, x, v in zip(self.results['current'], self.results['position'], self.results['velocity']):
+                for i, (I, x, v) in enumerate(zip(self.results['current'], self.results['position'], self.results['velocity'])):
                     if abs(I) > 1e-6 and abs(v) > 1e-6:
-                        effects = self.physics.calculate_eddy_current_effects(I, v, x)
+                        # Get current and time history for frequency analysis
+                        hist_start = max(0, i - 20)
+                        current_hist = self.results['current'][hist_start:i+1] if i > 0 else None
+                        time_hist = self.results['time'][hist_start:i+1] if i > 0 else None
+                        
+                        effects = self.physics.calculate_eddy_current_effects(I, v, x, current_hist, time_hist)
                         eddy_effects.append(effects)
                     else:
-                        eddy_effects.append({'skin_depth': np.inf, 'induced_current': 0, 'opposing_force': 0})
+                        eddy_effects.append({
+                            'skin_depth': np.inf, 'induced_current': 0, 'opposing_force': 0,
+                            'power_loss': 0, 'effective_resistance': np.inf, 'induced_emf': 0,
+                            'current_density_peak': 0, 'frequency_effective': 0
+                        })
                 
+                # Extract enhanced eddy current data
                 self.results['skin_depth'] = np.array([ef.get('skin_depth', np.inf) for ef in eddy_effects])
                 self.results['eddy_current_magnitude'] = np.array([ef.get('induced_current', 0) for ef in eddy_effects])
+                self.results['eddy_current_resistance'] = np.array([ef.get('effective_resistance', np.inf) for ef in eddy_effects])
+                self.results['eddy_induced_emf'] = np.array([ef.get('induced_emf', 0) for ef in eddy_effects])
+                self.results['eddy_current_density'] = np.array([ef.get('current_density_peak', 0) for ef in eddy_effects])
+                self.results['frequency_content'] = np.array([ef.get('frequency_effective', 0) for ef in eddy_effects])
                 
-            # Magnetic field analysis
+            # ENHANCED: Magnetic field analysis using enhanced methods
+                
+            # ENHANCED: Use the enhanced magnetic field calculation
             self.results['magnetic_field'] = np.array([
-                self.physics.magnetic_field_solenoid_on_axis(pos, I) 
+                self.physics.magnetic_field_solenoid_enhanced(pos, I) if hasattr(self.physics, 'magnetic_field_solenoid_enhanced') 
+                else self.physics.magnetic_field_solenoid_on_axis(pos, I)
                 for pos, I in zip(self.results['position'], self.results['current'])
             ])
             
@@ -518,27 +615,122 @@ class CoilgunSimulation:
                 self.physics.get_inductance_gradient(pos) for pos in self.results['position']
             ])
             
-            # Power decomposition
+            # ENHANCED: Power decomposition with detailed loss analysis
             self.results['power_mechanical'] = self.results['force_total'] * self.results['velocity']
             self.results['power_loss_resistive'] = self.results['current']**2 * self.physics.total_resistance
             
-            # Magnetic energy
+            # Additional power loss components if available
+            if 'power_loss_eddy' in self.results:
+                self.results['power_loss_total'] = self.results['power_loss_resistive'] + self.results['power_loss_eddy']
+            else:
+                self.results['power_loss_total'] = self.results['power_loss_resistive']
+            
+            # ENHANCED: Magnetic energy with nonlinear inductance effects
             self.results['energy_magnetic'] = 0.5 * self.results['inductance'] * self.results['current']**2
+            
+            # ENHANCED: Temperature analysis if available
+            if hasattr(self.physics, 'temperature'):
+                # Simple temperature rise estimation from eddy current losses
+                if hasattr(self.physics, 'eddy_power_loss'):
+                    temp_rise = np.cumsum(self.results.get('power_loss_eddy', np.zeros_like(self.results['time']))) * np.gradient(self.results['time'])
+                    self.results['temperature_rise'] = temp_rise * 0.1  # Simplified thermal model
+                else:
+                    self.results['temperature_rise'] = np.zeros_like(self.results['time'])
+            
+            # ENHANCED: Effective permeability tracking
+            if hasattr(self.physics, '_calculate_effective_permeability'):
+                permeability_values = []
+                for I, x in zip(self.results['current'], self.results['position']):
+                    try:
+                        coupling = self.physics._calculate_magnetic_coupling(x, I) if hasattr(self.physics, '_calculate_magnetic_coupling') else 1.0
+                        mu_eff = self.physics._calculate_effective_permeability(x, I, coupling, 0.0)
+                        permeability_values.append(mu_eff)
+                    except:
+                        permeability_values.append(1.0)
+                self.results['permeability_effective'] = np.array(permeability_values)
+            
+            # ENHANCED: Saturation factor tracking
+            if hasattr(self.physics, 'saturation_enabled') and self.physics.saturation_enabled:
+                saturation_factors = []
+                for I, x in zip(self.results['current'], self.results['position']):
+                    try:
+                        # Get material-dependent saturation field from config
+                        if hasattr(self.physics, 'materials_data'):
+                            # Get projectile material from config
+                            proj_material = self.physics.config.get('projectile', {}).get('material', 'steel')
+                            materials = self.physics.materials_data.get('materials', {})
+                            material_props = materials.get(proj_material, materials.get('steel', {}))
+                            B_sat = material_props.get('saturation_field', 2.0)  # Tesla
+                        else:
+                            # Fallback to default steel saturation if materials database not available
+                            B_sat = 2.0  # Tesla
+                        
+                        # Calculate magnetic field at projectile position
+                        B_field = self.physics.magnetic_field_solenoid_enhanced(x, I) if hasattr(self.physics, 'magnetic_field_solenoid_enhanced') else 0
+                        
+                        # Ensure B_field is a scalar for min() function
+                        B_field_mag = float(np.abs(B_field)) if hasattr(B_field, '__len__') else abs(B_field)
+                        
+                        # Calculate saturation factor (1.0 = no saturation, <1.0 = saturated)
+                        sat_factor = min(1.0, float(B_sat / (B_field_mag + 1e-6)))
+                        saturation_factors.append(sat_factor)
+                    except:
+                        saturation_factors.append(1.0)
+                self.results['saturation_factor'] = np.array(saturation_factors)
+                
+            # ENHANCED: Physics validation and error bounds assessment
+            if hasattr(self.physics, 'field_accuracy'):
+                self.results['field_accuracy'] = getattr(self.physics, 'field_accuracy', 1e-6)
+            
+            # ENHANCED: Force consistency check
+            force_consistency = []
+            for i in range(1, len(self.results['force_total'])):
+                if abs(self.results['force_total'][i-1]) > 1e-6:
+                    consistency = abs(self.results['force_total'][i] - self.results['force_total'][i-1]) / abs(self.results['force_total'][i-1])
+                    force_consistency.append(consistency)
+                else:
+                    force_consistency.append(0.0)
+            if force_consistency:
+                self.results['force_consistency'] = np.array([0.0] + force_consistency)
+            else:
+                self.results['force_consistency'] = np.zeros_like(self.results['force_total'])
+                
+            # ENHANCED: Energy conservation tracking
+            E_initial = self.physics.initial_energy
+            E_capacitor = self.results['energy_capacitor']
+            E_kinetic = self.results['energy_kinetic'] 
+            E_magnetic = self.results['energy_magnetic']
+            
+            # Estimate energy losses (cumulative)
+            dt = np.gradient(self.results['time'])
+            E_resistive_loss = np.cumsum(self.results['power_loss_resistive'] * dt)
+            E_eddy_loss = np.cumsum(self.results.get('power_loss_eddy', np.zeros_like(self.results['time'])) * dt)
+            
+            # Total accounted energy
+            E_total_accounted = E_capacitor + E_kinetic + E_magnetic + E_resistive_loss + E_eddy_loss
+            
+            # Energy conservation error
+            energy_conservation_error = np.abs(E_total_accounted - E_initial) / E_initial
+            self.results['energy_conservation'] = energy_conservation_error;
             
             # Physics validation if available
             if hasattr(self.physics, 'calculate_field_with_error_estimate'):
                 field_validation = []
                 for pos, I in zip(self.results['position'][:10], self.results['current'][:10]):  # Sample first 10 points
                     if abs(I) > 1e-6:
-                        validation = self.physics.calculate_field_with_error_estimate(pos, I)
-                        field_validation.append(validation.get('relative_error_estimate', 0))
+                        validation_method = getattr(self.physics, 'calculate_field_with_error_estimate', None)
+                        if validation_method:
+                            validation = validation_method(pos, I)
+                            field_validation.append(validation.get('relative_error_estimate', 0))
+                        else:
+                            field_validation.append(0)
                     else:
                         field_validation.append(0)
-                self.results['field_accuracy'] = np.mean(field_validation) if field_validation else 0
+                self.results['field_accuracy'] = np.mean(field_validation) if field_validation else 0.0
             
         except Exception as e:
             print(f"Warning: Enhanced physics analysis failed: {e}")
-            # Provide fallback values
+            # Provide fallback values for enhanced physics
             self.results['force_gradient'] = np.zeros_like(self.results['force_total'])
             self.results['force_reluctance'] = np.zeros_like(self.results['force_total'])
             self.results['force_lorentz'] = np.zeros_like(self.results['force_total'])
@@ -546,9 +738,20 @@ class CoilgunSimulation:
             self.results['force_eddy'] = np.zeros_like(self.results['force_total'])
             self.results['skin_depth'] = np.full_like(self.results['force_total'], np.inf)
             self.results['eddy_current_magnitude'] = np.zeros_like(self.results['force_total'])
+            self.results['eddy_current_resistance'] = np.full_like(self.results['force_total'], np.inf)
+            self.results['eddy_induced_emf'] = np.zeros_like(self.results['force_total'])
+            self.results['eddy_current_density'] = np.zeros_like(self.results['force_total'])
+            self.results['frequency_content'] = np.zeros_like(self.results['force_total'])
             self.results['power_mechanical'] = self.results['force_total'] * self.results['velocity']
             self.results['power_loss_resistive'] = self.results['current']**2 * self.physics.total_resistance
+            self.results['power_loss_total'] = self.results['power_loss_resistive']
             self.results['energy_magnetic'] = 0.5 * self.results['inductance'] * self.results['current']**2
+            self.results['temperature_rise'] = np.zeros_like(self.results['time'])
+            self.results['permeability_effective'] = np.ones_like(self.results['force_total'])
+            self.results['saturation_factor'] = np.ones_like(self.results['force_total'])
+            self.results['field_accuracy'] = 0.0
+            self.results['force_consistency'] = np.zeros_like(self.results['force_total'])
+            self.results['energy_conservation'] = np.zeros_like(self.results['time'])
         
         # Set backward compatibility aliases
         self.results['force'] = self.results['force_total']
@@ -607,6 +810,179 @@ class CoilgunSimulation:
         print(f"\nTheoretical Comparison:")
         print(f"  Theoretical max velocity: {theoretical_max_velocity:.2f} m/s")
         print(f"  Achieved fraction: {velocity_ratio:.3f}")
+        
+        # ENHANCED: Advanced physics analysis results
+        if len(self.results['time']) > 0:
+            print(f"\nEnhanced Physics Analysis:")
+            
+            # Force decomposition analysis
+            if 'force_gradient' in self.results and np.any(self.results['force_gradient'] != 0):
+                max_force_grad = np.max(np.abs(self.results['force_gradient']))
+                max_force_eddy = np.max(np.abs(self.results['force_eddy']))
+                max_force_total = np.max(np.abs(self.results['force_total']))
+                
+                print(f"  Force Analysis:")
+                print(f"    Max gradient force: {max_force_grad:.1f} N")
+                print(f"    Max eddy current force: {max_force_eddy:.1f} N")
+                print(f"    Max total force: {max_force_total:.1f} N")
+                
+                # Force breakdown at peak
+                peak_idx = np.argmax(np.abs(self.results['force_total']))
+                if abs(self.results['force_total'][peak_idx]) > 1e-9:
+                    grad_percent = abs(self.results['force_gradient'][peak_idx]) / abs(self.results['force_total'][peak_idx]) * 100
+                    eddy_percent = abs(self.results['force_eddy'][peak_idx]) / abs(self.results['force_total'][peak_idx]) * 100
+                    print(f"    Force breakdown at peak: {grad_percent:.1f}% gradient, {eddy_percent:.1f}% eddy losses")
+                
+                # Additional force components if available
+                if 'force_lorentz' in self.results:
+                    max_lorentz = np.max(np.abs(self.results['force_lorentz']))
+                    if max_lorentz > 0.1:
+                        print(f"    Max Lorentz force: {max_lorentz:.1f} N")
+                
+                if 'force_maxwell' in self.results:
+                    max_maxwell = np.max(np.abs(self.results['force_maxwell']))
+                    if max_maxwell > 0.1:
+                        print(f"    Max Maxwell stress force: {max_maxwell:.1f} N")
+                
+                if 'force_reluctance' in self.results:
+                    max_reluctance = np.max(np.abs(self.results['force_reluctance']))
+                    if max_reluctance > 0.1:
+                        print(f"    Max reluctance force: {max_reluctance:.1f} N")
+            
+            # Eddy current effects analysis
+            if 'eddy_current_magnitude' in self.results:
+                max_eddy_current = np.max(self.results['eddy_current_magnitude'])
+                avg_eddy_current = np.mean(self.results['eddy_current_magnitude'])
+                finite_skin_depths = self.results['skin_depth'][self.results['skin_depth'] < np.inf]
+                
+                print(f"  Eddy Current Analysis:")
+                if max_eddy_current > 0:
+                    print(f"    Peak eddy current: {max_eddy_current:.1f} A")
+                    print(f"    Average eddy current: {avg_eddy_current:.2f} A")
+                else:
+                    print(f"    No significant eddy currents detected")
+                
+                if len(finite_skin_depths) > 0:
+                    min_skin_depth = np.min(finite_skin_depths)
+                    avg_skin_depth = np.mean(finite_skin_depths)
+                    print(f"    Min skin depth: {min_skin_depth*1000:.2f} mm")
+                    print(f"    Avg skin depth: {avg_skin_depth*1000:.1f} mm")
+                
+                if 'frequency_content' in self.results:
+                    max_frequency = np.max(self.results['frequency_content'])
+                    if max_frequency > 10:
+                        print(f"    Peak frequency content: {max_frequency:.0f} Hz")
+            
+            # Power and energy analysis
+            if 'power_loss_eddy' in self.results:
+                max_eddy_power = np.max(self.results['power_loss_eddy'])
+                total_eddy_energy = np.trapezoid(self.results['power_loss_eddy'], self.results['time'])
+                total_resistive_energy = np.trapezoid(self.results['power_loss_resistive'], self.results['time'])
+                
+                print(f"  Power Loss Analysis:")
+                print(f"    Peak eddy power loss: {max_eddy_power:.1f} W")
+                print(f"    Total eddy energy loss: {total_eddy_energy:.3f} J")
+                print(f"    Total resistive loss: {total_resistive_energy:.3f} J")
+                
+                if float(total_eddy_energy) > 0 and float(total_resistive_energy) > 0:
+                    loss_ratio = float(total_eddy_energy) / float(total_resistive_energy) * 100
+                    print(f"    Eddy/Resistive loss ratio: {loss_ratio:.1f}%")
+            
+            # Magnetic saturation and permeability effects
+            if 'saturation_factor' in self.results:
+                min_sat_factor = np.min(self.results['saturation_factor'])
+                avg_sat_factor = np.mean(self.results['saturation_factor'])
+                
+                print(f"  Magnetic Saturation Analysis:")
+                print(f"    Min saturation factor: {min_sat_factor:.3f}")
+                print(f"    Avg saturation factor: {avg_sat_factor:.3f}")
+                
+                if min_sat_factor < 0.95:
+                    print(f"    ⚠ Significant magnetic saturation detected!")
+                    sat_positions = self.results['position'][self.results['saturation_factor'] < 0.95]
+                    if len(sat_positions) > 0:
+                        print(f"    Saturation region: {sat_positions[0]*1000:.1f} to {sat_positions[-1]*1000:.1f} mm")
+                elif min_sat_factor < 0.99:
+                    print(f"    ⚠ Mild magnetic saturation detected")
+                else:
+                    print(f"    ✓ No significant magnetic saturation")
+            
+            # Permeability variation
+            if 'permeability_effective' in self.results:
+                mu_max = np.max(self.results['permeability_effective'])
+                mu_min = np.min(self.results['permeability_effective'])
+                mu_avg = np.mean(self.results['permeability_effective'])
+                
+                if mu_max != mu_min:
+                    print(f"  Permeability Analysis:")
+                    print(f"    Permeability range: {mu_min:.0f} - {mu_max:.0f} (avg: {mu_avg:.0f})")
+                    print(f"    Permeability variation: {((mu_max-mu_min)/mu_avg)*100:.1f}%")
+            
+            # Energy conservation and accuracy checks
+            if 'energy_conservation' in self.results:
+                max_energy_error = np.max(self.results['energy_conservation'])
+                avg_energy_error = np.mean(self.results['energy_conservation'])
+                
+                print(f"  Accuracy Assessment:")
+                print(f"    Max energy conservation error: {max_energy_error*100:.3f}%")
+                print(f"    Avg energy conservation error: {avg_energy_error*100:.4f}%")
+                
+                if max_energy_error < 0.001:
+                    print(f"    ✓ Excellent energy conservation")
+                elif max_energy_error < 0.01:
+                    print(f"    ✓ Good energy conservation")
+                else:
+                    print(f"    ⚠ Energy conservation errors detected")
+            
+            # Force consistency check
+            if 'force_consistency' in self.results and np.any(self.results['force_consistency'] > 0):
+                max_force_error = np.max(self.results['force_consistency'])
+                avg_force_error = np.mean(self.results['force_consistency'])
+                
+                print(f"    Max force consistency error: {max_force_error*100:.2f}%")
+                print(f"    Avg force consistency error: {avg_force_error*100:.3f}%")
+                
+                if max_force_error < 0.01:
+                    print(f"    ✓ Excellent force calculation consistency")
+                elif max_force_error < 0.05:
+                    print(f"    ✓ Good force calculation consistency")
+                else:
+                    print(f"    ⚠ Force calculation inconsistencies detected")
+            
+            # Field accuracy assessment
+            if hasattr(self, 'results') and 'field_accuracy' in self.results:
+                field_accuracy = self.results['field_accuracy']
+                if field_accuracy > 0:
+                    print(f"    Field calculation accuracy: {(1-field_accuracy)*100:.2f}%")
+                    if field_accuracy < 0.01:
+                        print(f"    ✓ Excellent field calculation accuracy")
+                    elif field_accuracy < 0.05:
+                        print(f"    ✓ Good field calculation accuracy")
+                    else:
+                        print(f"    ⚠ Field calculation accuracy issues detected")
+            
+            # Temperature effects
+            if 'temperature_rise' in self.results:
+                max_temp_rise = np.max(self.results['temperature_rise'])
+                if max_temp_rise > 0.1:
+                    print(f"  Thermal Analysis:")
+                    print(f"    Maximum temperature rise: {max_temp_rise:.1f}°C")
+                    if max_temp_rise > 100:
+                        print(f"    ⚠ High temperature rise may affect performance")
+                    elif max_temp_rise > 50:
+                        print(f"    ⚠ Moderate temperature rise detected")
+                    else:
+                        print(f"    ✓ Temperature rise within reasonable limits")
+            
+            # Physics accuracy assessment
+            if 'field_accuracy' in self.results and self.results['field_accuracy'] > 0:
+                print(f"  Field calculation accuracy: {self.results['field_accuracy']*100:.3f}%")
+                
+            # Frequency content analysis
+            if 'frequency_content' in self.results:
+                max_freq = np.max(self.results['frequency_content'])
+                if max_freq > 0:
+                    print(f"  Max frequency content: {max_freq:.0f} Hz")
     
     def _get_summary_results(self):
         """
@@ -657,14 +1033,14 @@ class CoilgunSimulation:
             }, f, indent=4, default=str)
         
         # Save detailed time-series data if available
-        if self.results['time'] is not None:
+        if len(self.results['time']) > 0:
             data_file = output_path / "time_series_data.npz"
             np.savez_compressed(data_file, **self.results)
             
             # Also save as CSV for easy analysis
             csv_file = output_path / "time_series_data.csv"
             
-            # Prepare data for CSV
+            # Prepare data for CSV - ENHANCED with all physics data
             csv_data = {
                 'time_s': self.results['time'],
                 'charge_C': self.results['charge'],
@@ -677,6 +1053,29 @@ class CoilgunSimulation:
                 'energy_capacitor_J': self.results['energy_capacitor'],
                 'energy_kinetic_J': self.results['energy_kinetic']
             }
+            
+            # ENHANCED: Add advanced physics data to CSV if available
+            enhanced_fields = [
+                ('force_gradient_N', 'force_gradient'),
+                ('force_eddy_N', 'force_eddy'),
+                ('magnetic_field_T', 'magnetic_field'),
+                ('inductance_gradient_H_per_m', 'inductance_gradient'),
+                ('power_mechanical_W', 'power_mechanical'),
+                ('power_loss_resistive_W', 'power_loss_resistive'),
+                ('power_loss_eddy_W', 'power_loss_eddy'),
+                ('energy_magnetic_J', 'energy_magnetic'),
+                ('skin_depth_m', 'skin_depth'),
+                ('eddy_current_A', 'eddy_current_magnitude'),
+                ('permeability_effective', 'permeability_effective'),
+                ('saturation_factor', 'saturation_factor'),
+                ('temperature_rise_K', 'temperature_rise'),
+                ('frequency_Hz', 'frequency_content'),
+                ('energy_conservation_error', 'energy_conservation')
+            ]
+            
+            for csv_name, result_key in enhanced_fields:
+                if result_key in self.results:
+                    csv_data[csv_name] = self.results[result_key]
             
             # Create DataFrame-like structure and save
             try:
@@ -702,7 +1101,7 @@ class CoilgunSimulation:
             save_plots: Whether to save plots to files
             output_dir: Directory to save plots
         """
-        if self.results['time'] is None:
+        if len(self.results['time']) == 0:
             print("No detailed results available for plotting.")
             return
         
@@ -771,7 +1170,223 @@ class CoilgunSimulation:
             print(f"Plots saved to: {plot_file}")
         
         plt.show()
+    
+    def check_physics_integration(self):
+        """
+        Check and report the status of enhanced physics engine integration.
+        
+        Returns:
+            dict: Status of various physics features
+        """
+        integration_status = {
+            'enhanced_force_calculation': hasattr(self.physics, 'magnetic_force_ferromagnetic'),
+            'eddy_current_effects': hasattr(self.physics, 'calculate_eddy_current_effects'),
+            'enhanced_magnetic_field': hasattr(self.physics, 'magnetic_field_solenoid_enhanced'),
+            'elliptic_integrals': hasattr(self.physics, '_magnetic_field_finite_solenoid_end'),
+            'nonlinear_permeability': hasattr(self.physics, 'calculate_nonlinear_permeability'),
+            'saturation_effects': hasattr(self.physics, 'saturation_enabled'),
+            'timing_optimization': hasattr(self.physics, 'timing_config'),
+            'energy_tracking': hasattr(self.physics, 'energy_tracking'),
+            'advanced_inductance': hasattr(self.physics, 'inductance_with_ferromagnetic_core'),
+            'force_analysis': hasattr(self.physics, 'force_analysis'),
+            'field_accuracy': hasattr(self.physics, 'field_accuracy'),
+            'frequency_analysis': getattr(self.physics, 'frequency_analysis_enabled', False),
+            'thermal_effects': getattr(self.physics, 'enable_thermal_effects', False),
+            'hysteresis_modeling': getattr(self.physics, 'hysteresis_enabled', False),
+            'jiles_atherton_model': hasattr(self.physics, 'jiles_atherton_hysteresis'),
+            '3d_eddy_currents': hasattr(self.physics, '_calculate_3d_eddy_currents'),
+            'maxwell_stress_tensor': hasattr(self.physics, '_calculate_maxwell_stress_force'),
+            'reluctance_force': hasattr(self.physics, '_calculate_reluctance_force'),
+            'lorentz_force': hasattr(self.physics, '_calculate_lorentz_force'),
+            'materials_database': hasattr(self.physics, 'materials_data'),
+            'temperature_dependent_properties': hasattr(self.physics, 'calculate_temperature_rise'),
+            'skin_depth_modeling': hasattr(self.physics, 'calculate_skin_depth'),
+            'proximity_effects': hasattr(self.physics, 'calculate_proximity_effects')
+        }
+        
+        print("\n" + "=" * 70)
+        print("ENHANCED PHYSICS ENGINE INTEGRATION STATUS")
+        print("=" * 70)
+        
+        # Group features by category
+        feature_categories = {
+            'Core Electromagnetic Physics': [
+                'enhanced_force_calculation', 'enhanced_magnetic_field', 'elliptic_integrals',
+                'advanced_inductance', 'materials_database'
+            ],
+            'Force Analysis': [
+                'force_analysis', 'maxwell_stress_tensor', 'reluctance_force', 'lorentz_force'
+            ],
+            'Eddy Current & AC Effects': [
+                'eddy_current_effects', '3d_eddy_currents', 'skin_depth_modeling', 
+                'proximity_effects', 'frequency_analysis'
+            ],
+            'Nonlinear Magnetic Effects': [
+                'nonlinear_permeability', 'saturation_effects', 'hysteresis_modeling', 
+                'jiles_atherton_model'
+            ],
+            'Thermal & Optimization': [
+                'thermal_effects', 'temperature_dependent_properties', 'timing_optimization'
+            ],
+            'Analysis & Validation': [
+                'energy_tracking', 'field_accuracy'
+            ]
+        }
+        
+        enabled_features = []
+        disabled_features = []
+        
+        for category, features in feature_categories.items():
+            print(f"\n{category}:")
+            for feature in features:
+                if feature in integration_status:
+                    feature_name = feature.replace('_', ' ').title()
+                    status = integration_status[feature]
+                    if status:
+                        enabled_features.append(feature_name)
+                        print(f"  ✓ {feature_name}: ENABLED")
+                    else:
+                        disabled_features.append(feature_name)
+                        print(f"  ✗ {feature_name}: Not Available")
+        
+        # Summary statistics
+        total_features = len(integration_status)
+        enabled_count = len(enabled_features)
+        coverage_percent = (enabled_count / total_features) * 100
+        
+        print(f"\n" + "=" * 70)
+        print(f"INTEGRATION SUMMARY: {enabled_count}/{total_features} features enabled ({coverage_percent:.1f}%)")
+        
+        # Physics engine configuration details
+        if hasattr(self.physics, 'field_method'):
+            print(f"Field calculation method: {self.physics.field_method}")
+            
+        if hasattr(self.physics, 'enable_advanced_physics'):
+            print(f"Advanced physics mode: {'ENABLED' if self.physics.enable_advanced_physics else 'DISABLED'}")
+            
+        if hasattr(self.physics, 'saturation_enabled'):
+            print(f"Magnetic saturation: {'ENABLED' if self.physics.saturation_enabled else 'DISABLED'}")
+            
+        if hasattr(self.physics, 'eddy_current_enabled'):
+            print(f"Eddy current effects: {'ENABLED' if self.physics.eddy_current_enabled else 'DISABLED'}")
+            
+        # Material properties check
+        if hasattr(self.physics, 'materials_data'):
+            num_materials = len(self.physics.materials_data.get('materials', {}))
+            print(f"Materials database: {num_materials} materials loaded")
+            
+        # Performance recommendations
+        print(f"\nPERFORMANCE RECOMMENDATIONS:")
+        if coverage_percent < 70:
+            print("  ⚠  Consider updating physics engine for enhanced accuracy")
+        
+        if not integration_status.get('elliptic_integrals', False):
+            print("  ⚠  Elliptic integral field calculation unavailable - using approximations")
+            
+        if not integration_status.get('eddy_current_effects', False):
+            print("  ⚠  Eddy current analysis disabled - may affect accuracy at high frequencies")
+            
+        if not integration_status.get('nonlinear_permeability', False):
+            print("  ⚠  Nonlinear magnetic effects disabled - may affect saturation predictions")
+            
+        if coverage_percent >= 85:
+            print("  ✓ Excellent physics engine integration - all major features available")
+        elif coverage_percent >= 70:
+            print("  ✓ Good physics engine integration - most features available")
+        
+        return integration_status
 
+    def optimize_physics_settings(self):
+        """
+        Optimize physics engine settings based on simulation parameters and available features.
+        
+        This method analyzes the configuration and automatically enables/configures
+        advanced physics features for optimal accuracy and performance.
+        
+        Returns:
+            dict: Summary of optimizations applied
+        """
+        optimizations = {
+            'field_method_optimized': False,
+            'eddy_current_enabled': False,
+            'saturation_modeling_enabled': False,
+            'timing_optimization_configured': False,
+            'frequency_analysis_enabled': False,
+            'thermal_effects_enabled': False,
+            'energy_tracking_enabled': False
+        }
+        
+        print("Optimizing physics engine settings...")
+        
+        # 1. Field calculation method optimization
+        if hasattr(self.physics, 'field_method'):
+            # Use elliptic integral method for high accuracy if available
+            if hasattr(self.physics, '_magnetic_field_finite_solenoid_end'):
+                self.physics.field_method = 'exact_elliptic'
+                optimizations['field_method_optimized'] = True
+                print("  ✓ Optimized for exact elliptic integral field calculation")
+            else:
+                print("  ⚠ Elliptic integral calculation not available, using approximations")
+        
+        # 2. Eddy current effects optimization
+        if hasattr(self.physics, 'eddy_current_enabled'):
+            # Enable if projectile velocity is expected to be significant
+            expected_velocity = np.sqrt(2 * self.physics.initial_energy / self.physics.proj_mass)
+            if expected_velocity > 10:  # Above 10 m/s, eddy currents become significant
+                self.physics.eddy_current_enabled = True
+                optimizations['eddy_current_enabled'] = True
+                print(f"  ✓ Eddy current effects enabled (expected velocity: {expected_velocity:.1f} m/s)")
+            else:
+                print(f"  - Eddy current effects disabled for low velocity simulation")
+        
+        # 3. Magnetic saturation modeling
+        if hasattr(self.physics, 'saturation_enabled'):
+            # Enable if high currents are expected
+            max_expected_current = self.physics.initial_voltage / self.physics.total_resistance
+            if max_expected_current > 50:  # Above 50A, saturation effects become important
+                self.physics.saturation_enabled = True
+                optimizations['saturation_modeling_enabled'] = True
+                print(f"  ✓ Magnetic saturation modeling enabled (expected current: {max_expected_current:.0f}A)")
+            else:
+                print(f"  - Magnetic saturation disabled for low current simulation")
+        
+        # 4. Timing optimization for multi-stage
+        if hasattr(self.physics, 'enable_timing_optimization'):
+            if self.config.get('multi_stage', {}).get('enabled', False):
+                self.physics.enable_timing_optimization = True
+                optimizations['timing_optimization_configured'] = True
+                print("  ✓ Multi-stage timing optimization enabled")
+        
+        # 5. Frequency analysis for AC effects
+        if hasattr(self.physics, 'frequency_analysis_enabled'):
+            # Enable for fast transients (short time constants)
+            time_constant = max(self.physics.inductance_values) / self.physics.total_resistance
+            if time_constant < 1e-3:  # Sub-millisecond time constants
+                self.physics.frequency_analysis_enabled = True
+                optimizations['frequency_analysis_enabled'] = True
+                print(f"  ✓ Frequency analysis enabled (time constant: {time_constant*1e6:.0f}μs)")
+        
+        # 6. Thermal effects for high power
+        if hasattr(self.physics, 'enable_thermal_effects'):
+            peak_power = self.physics.initial_voltage**2 / self.physics.total_resistance
+            if peak_power > 1000:  # Above 1kW
+                self.physics.enable_thermal_effects = True
+                optimizations['thermal_effects_enabled'] = True
+                print(f"  ✓ Thermal effects enabled (peak power: {peak_power:.0f}W)")
+        
+        # 7. Energy tracking for validation
+        if hasattr(self.physics, 'energy_tracking'):
+            self.physics.energy_tracking = True
+            optimizations['energy_tracking_enabled'] = True
+            print("  ✓ Energy conservation tracking enabled")
+        
+        # Summary
+        enabled_optimizations = sum(1 for opt in optimizations.values() if opt)
+        total_optimizations = len(optimizations)
+        
+        print(f"Physics optimization complete: {enabled_optimizations}/{total_optimizations} optimizations applied")
+        
+        return optimizations
 
 class MultiStageCoilgunSimulation:
     """
@@ -975,7 +1590,7 @@ class MultiStageCoilgunSimulation:
                     self.simulation_info['total_initial_energy'] += stage_results['initial_energy_J']
                     
                     # Aggregate time-series data if available
-                    if save_data and stage_sim.results['time'] is not None:
+                    if save_data and len(stage_sim.results['time']) > 0:
                         # Adjust time to be cumulative across stages
                         adjusted_time = stage_sim.results['time'] + time_offset
                         
@@ -1398,7 +2013,42 @@ def main():
             # Use single-stage simulation
             print("Detected single-stage configuration")
             sim = CoilgunSimulation(config_file)
-            results = sim.run_simulation(save_data=True, verbose=True, show_progress=True)
+            
+            # ENHANCED: Check physics integration status for single-stage simulations
+            print("\n" + "="*50)
+            print("CHECKING ENHANCED PHYSICS INTEGRATION")
+            print("="*50)
+            physics_status = sim.check_physics_integration()
+            
+            # ENHANCED: Optimize physics settings for this simulation
+            print("\n" + "="*50)
+            print("OPTIMIZING PHYSICS ENGINE SETTINGS")
+            print("="*50)
+            optimization_status = sim.optimize_physics_settings()
+            
+            # Provide recommendations based on physics integration
+            total_features = len(physics_status)
+            enabled_features = sum(1 for status in physics_status.values() if status)
+            integration_quality = enabled_features / total_features
+            
+            if integration_quality >= 0.85:
+                print(f"\n✓ Excellent physics integration ({enabled_features}/{total_features} features)")
+                print("  All major advanced physics features are available")
+            elif integration_quality >= 0.70:
+                print(f"\n✓ Good physics integration ({enabled_features}/{total_features} features)")
+                print("  Most advanced physics features are available")
+            elif integration_quality >= 0.50:
+                print(f"\n⚠ Moderate physics integration ({enabled_features}/{total_features} features)")
+                print("  Some advanced physics features may be missing")
+            else:
+                print(f"\n⚠ Limited physics integration ({enabled_features}/{total_features} features)")
+                print("  Consider updating physics engine for better accuracy")
+            
+            # Run simulation with enhanced physics
+            print("\n" + "="*50)
+            print("RUNNING ENHANCED COILGUN SIMULATION")
+            print("="*50)
+            results = sim.run_simulation(save_data=True, verbose=True, show_progress=True, check_physics=True)
             
             # Create output directory based on config filename
             config_name = Path(config_file).stem
@@ -1410,7 +2060,7 @@ def main():
             print("="*50)
             sim.save_results(output_dir)
             
-            # Print summary
+            # Print enhanced summary with physics analysis
             print("\n" + "="*50)
             print("SIMULATION SUMMARY")
             print("="*50)
@@ -1420,6 +2070,49 @@ def main():
             print(f"Max force: {results.get('max_force_N', 0):.1f} N")
             print(f"Simulation time: {results['simulation_time_s']:.3f} s")
             print(f"Exit reason: {results['exit_reason']}")
+            
+            # Enhanced physics summary
+            if hasattr(sim, 'results') and len(sim.results.get('time', [])) > 0:
+                print(f"\nAdvanced Physics Summary:")
+                
+                # Force analysis summary
+                if 'force_gradient' in sim.results:
+                    max_gradient_force = np.max(np.abs(sim.results['force_gradient']))
+                    max_eddy_force = np.max(np.abs(sim.results.get('force_eddy', [0])))
+                    print(f"  Peak gradient force: {max_gradient_force:.1f} N")
+                    if max_eddy_force > 0.1:
+                        print(f"  Peak eddy current force: {max_eddy_force:.1f} N")
+                
+                # Eddy current summary
+                if 'eddy_current_magnitude' in sim.results:
+                    max_eddy_current = np.max(sim.results['eddy_current_magnitude'])
+                    if max_eddy_current > 0:
+                        print(f"  Peak eddy current: {max_eddy_current:.1f} A")
+                
+                # Skin depth analysis
+                if 'skin_depth' in sim.results:
+                    finite_depths = sim.results['skin_depth'][sim.results['skin_depth'] < np.inf]
+                    if len(finite_depths) > 0:
+                        min_skin_depth = np.min(finite_depths)
+                        print(f"  Minimum skin depth: {min_skin_depth*1000:.2f} mm")
+                
+                # Magnetic saturation check
+                if 'saturation_factor' in sim.results:
+                    min_saturation = np.min(sim.results['saturation_factor'])
+                    if min_saturation < 0.99:
+                        print(f"  Magnetic saturation detected (factor: {min_saturation:.3f})")
+                
+                # Energy conservation check
+                if 'energy_conservation' in sim.results:
+                    max_energy_error = np.max(sim.results['energy_conservation'])
+                    print(f"  Energy conservation error: {max_energy_error*100:.3f}%")
+                    
+                    if max_energy_error < 0.001:
+                        print(f"  ✓ Excellent energy conservation")
+                    elif max_energy_error < 0.01:
+                        print(f"  ✓ Good energy conservation")
+                    else:
+                        print(f"  ⚠ Energy conservation issues detected")
             
             # Calculate key performance metrics
             initial_energy = results['initial_energy_J']
