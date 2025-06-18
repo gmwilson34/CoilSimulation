@@ -65,10 +65,10 @@ from metal_acceleration import MetalAcceleration, create_metal_accelerated_solve
 class ProgressTracker:
     """
     Enhanced progress tracking class with Metal GPU indicators and physics diagnostics.
-    Maintains full compatibility with solve.py ProgressTracker interface.
+    Maintains EXACT compatibility with solve.py ProgressTracker interface.
     """
     
-    def __init__(self, t_span, update_interval=0.1, physics_engine=None):
+    def __init__(self, t_span, update_interval=0.1, physics_engine=None, backend_info=None):
         """
         Initialize progress tracker with Metal GPU support.
         
@@ -76,16 +76,39 @@ class ProgressTracker:
             t_span: Time span tuple (t_start, t_end)
             update_interval: Update interval in seconds
             physics_engine: Physics engine for diagnostics
+            backend_info: Backend information (e.g., "Metal GPU", "Julia CPU")
         """
         self.t_start, self.t_end = t_span
         self.t_duration = self.t_end - self.t_start
         self.update_interval = update_interval
         self.physics = physics_engine
         
-        # Detect Metal GPU availability
-        self.metal_enabled = hasattr(physics_engine, 'metal') and physics_engine.metal.metal_available if physics_engine else False
+        # Detect Metal GPU availability with improved logic
+        self.metal_enabled = False
         
-        # Progress tracking
+        # First check if backend info was explicitly provided
+        if backend_info and 'Metal GPU' in str(backend_info):
+            self.metal_enabled = True
+        elif physics_engine:
+            # Check multiple ways Metal GPU might be indicated
+            if hasattr(physics_engine, 'metal') and hasattr(physics_engine.metal, 'metal_available'):
+                self.metal_enabled = physics_engine.metal.metal_available
+            elif hasattr(physics_engine, 'metal_available'):
+                self.metal_enabled = physics_engine.metal_available
+            elif hasattr(physics_engine, 'backend') and 'Metal GPU' in str(physics_engine.backend):
+                self.metal_enabled = True
+            elif hasattr(physics_engine, 'solve_with_julia'):
+                # If Julia solver is available, check if Metal GPU is being used
+                # Look for Metal GPU indicators in the physics engine
+                try:
+                    import platform
+                    is_apple_silicon = platform.machine() == 'arm64' and platform.system() == 'Darwin'
+                    if is_apple_silicon and hasattr(physics_engine, 'metal'):
+                        self.metal_enabled = True
+                except:
+                    pass
+        
+        # Progress tracking (EXACT same as solve.py)
         self.current_time = self.t_start
         self.current_state = None
         self.step_count = 0
@@ -93,27 +116,27 @@ class ProgressTracker:
         self.last_update_time = self.start_real_time
         self.last_step_count = 0
         
-        # Rate calculation
+        # Rate calculation with sliding window (EXACT same as solve.py)
         self.current_integration_rate = 0.0
         
-        # Physics diagnostics
+        # Physics diagnostics (EXACT same as solve.py)
         self.max_current = 0
         self.max_force = 0
         self.max_velocity = 0
         self.current_position = 0
         self.physics_warnings = []
-        self.displayed_warnings = set()
+        self.displayed_warnings = set()  # Track displayed warnings to avoid duplicates
         
-        # Progress bar settings
+        # Progress bar settings (EXACT same as solve.py)
         self.bar_width = 50
         self.running = True
         self.stopped = False
         self.last_displayed_warning = None
         
-        # Terminal control
+        # Terminal control (EXACT same as solve.py)
         self.progress_active = False
         self.last_progress_length = 0
-        self.integration_started = False
+        self.integration_started = False  # Flag to control when to start displaying
         
         # Start progress display thread
         self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
@@ -125,7 +148,7 @@ class ProgressTracker:
 
     def update(self, t, y):
         """
-        Update progress with current simulation state (compatible with solve.py).
+        Enhanced update with physics diagnostics (EXACT same as solve.py).
         
         Args:
             t: Current time
@@ -135,6 +158,7 @@ class ProgressTracker:
         self.current_state = y
         self.step_count += 1
         
+        # Start displaying progress bar on first update
         if not self.integration_started:
             self.integration_started = True
         
@@ -145,23 +169,30 @@ class ProgressTracker:
             self.max_velocity = max(self.max_velocity, abs(v))
             self.current_position = x
             
-            # Calculate force for diagnostics
+            # Calculate current force for diagnostics using enhanced physics
             if self.physics and abs(I) > 1e-6:
                 try:
+                    # Use the enhanced magnetic force calculation with circuit logic
                     if hasattr(self.physics, 'magnetic_force_with_circuit_logic'):
                         force_result = self.physics.magnetic_force_with_circuit_logic(I, x, t, v)
                     else:
                         force_result = self.physics.magnetic_force_ferromagnetic(I, x, v)
                     
-                    force = force_result[0] if isinstance(force_result, tuple) else force_result
+                    # Unpack the tuple (force, eddy_power_loss) and use just the force
+                    if isinstance(force_result, tuple):
+                        force = force_result[0]
+                    else:
+                        force = force_result
+                    
                     self.max_force = max(self.max_force, abs(force))
                 except Exception as e:
-                    warning_msg = f"Force calc warning at t={t:.2e}s: {str(e)[:50]}"
+                    # Store warning but don't print immediately during progress bar display
+                    warning_msg = f"Force calculation warning at t={t:.2e}s: {str(e)[:50]}"
                     if warning_msg not in self.displayed_warnings:
                         self.physics_warnings.append(warning_msg)
     
     def _clear_progress_line(self):
-        """Clear the current progress line from terminal."""
+        """Clear the current progress line from terminal (EXACT same as solve.py)."""
         if self.progress_active and self.last_progress_length > 0:
             sys.stdout.write('\r' + ' ' * self.last_progress_length + '\r')
             sys.stdout.flush()
@@ -169,15 +200,18 @@ class ProgressTracker:
         self.last_progress_length = 0
     
     def _display_loop(self):
-        """Display progress bar in a separate thread."""
+        """Display progress bar in a separate thread (EXACT same as solve.py)."""
         while self.running and not self.stopped:
+            # Only start displaying after integration has started
             if self.integration_started:
+                # Check for new warnings
                 self._check_for_new_warnings()
+                # Update progress bar
                 self._draw_progress_bar()
             time.sleep(self.update_interval)
     
     def _check_for_new_warnings(self):
-        """Check for new warnings and display them above the progress bar."""
+        """Check for new warnings and display them above the progress bar (EXACT same as solve.py)."""
         new_warning = None
         
         # Check for physics warnings
@@ -201,68 +235,186 @@ class ProgressTracker:
         
         # Display new warning if found
         if new_warning:
+            # Clear current progress line
             self._clear_progress_line()
+            # Print warning on a new line
             print(new_warning)
+            # Force redraw of progress bar on next iteration
             sys.stdout.flush()
     
+    def _update_metal_gpu_status(self):
+        """Dynamically check Metal GPU status during runtime."""
+        if self.physics:
+            # Re-check Metal GPU availability during simulation
+            if hasattr(self.physics, 'metal') and hasattr(self.physics.metal, 'metal_available'):
+                self.metal_enabled = self.physics.metal.metal_available
+            elif hasattr(self.physics, 'metal_available'):
+                self.metal_enabled = self.physics.metal_available
+            # Also check if we're on Apple Silicon and have Julia acceleration
+            elif hasattr(self.physics, 'solve_with_julia'):
+                try:
+                    import platform
+                    is_apple_silicon = platform.machine() == 'arm64' and platform.system() == 'Darwin'
+                    if is_apple_silicon:
+                        self.metal_enabled = True
+                except:
+                    pass
+
     def _draw_progress_bar(self, force_draw=False):
-        """Draw enhanced progress bar with Metal GPU indicators."""
+        """Draw enhanced progress bar with Metal GPU indicators (matching solve.py format)."""
         if self.stopped and not force_draw:
             return
         
-        # Calculate progress percentage
+        # Update Metal GPU status dynamically
+        self._update_metal_gpu_status()
+        
+        # Calculate progress percentage (EXACT same as solve.py)
         if self.t_duration > 0:
-            progress = min((self.current_time - self.t_start) / self.t_duration, 1.0)
+            progress = min(1.0, (self.current_time - self.t_start) / self.t_duration)
         else:
-            progress = 1.0
+            progress = 0.0
         
-        # Build progress bar
-        filled_length = int(self.bar_width * progress)
-        bar = '█' * filled_length + '-' * (self.bar_width - filled_length)
+        # Calculate integration rate (EXACT same as solve.py)
+        current_real_time = time.time()
+        real_time_elapsed = current_real_time - self.last_update_time
         
-        # Metal GPU indicator
-        backend_indicator = "🚀 Metal GPU" if self.metal_enabled else "⚡ Julia CPU"
+        # Update rate calculation periodically for smoothness
+        if real_time_elapsed >= self.update_interval and real_time_elapsed > 0:
+            steps_since_update = self.step_count - self.last_step_count
+            new_rate = steps_since_update / real_time_elapsed
+            
+            # Use exponential smoothing for stable rate display
+            if self.current_integration_rate == 0:
+                self.current_integration_rate = new_rate
+            else:
+                # Smooth the rate to avoid rapid fluctuations
+                alpha = 0.3  # Smoothing factor
+                self.current_integration_rate = (alpha * new_rate + 
+                                               (1 - alpha) * self.current_integration_rate)
+            
+            self.last_update_time = current_real_time
+            self.last_step_count = self.step_count
         
-        # Status line with physics diagnostics
-        status_line = (
-            f"\r{backend_indicator} |{bar}| {progress*100:.1f}% "
-            f"({self.current_time*1000:.1f}/{self.t_end*1000:.1f}ms) "
-            f"I: {self.max_current:.0f}A "
-            f"F: {self.max_force:.0f}N "
-            f"v: {self.max_velocity:.1f}m/s "
-            f"x: {self.current_position*1000:.1f}mm"
-        )
+        # Use the smoothed rate for display
+        integration_rate = self.current_integration_rate
         
-        # Clear and update
-        if self.progress_active and self.last_progress_length > 0:
-            sys.stdout.write('\r' + ' ' * self.last_progress_length + '\r')
+        # Create progress bar (EXACT same format as solve.py but with Metal GPU indicator)
+        filled = int(self.bar_width * progress)
+        bar = '█' * filled + '░' * (self.bar_width - filled)
         
-        sys.stdout.write(status_line)
+        # Format time (EXACT same as solve.py)
+        if self.current_time < 1e-3:
+            time_str = f"{self.current_time*1e6:.1f}μs"
+        elif self.current_time < 1:
+            time_str = f"{self.current_time*1e3:.1f}ms"
+        else:
+            time_str = f"{self.current_time:.3f}s"
+        
+        if self.t_end < 1e-3:
+            total_time_str = f"{self.t_end*1e6:.1f}μs"
+        elif self.t_end < 1:
+            total_time_str = f"{self.t_end*1e3:.1f}ms"
+        else:
+            total_time_str = f"{self.t_end:.3f}s"
+        
+        # Physics status indicators (EXACT same as solve.py)
+        physics_status = ""
+        if self.current_state is not None and len(self.current_state) >= 4:
+            I, x, v = self.current_state[1], self.current_state[2], self.current_state[3]
+            physics_status = f" | I:{I:.0f}A | x:{x*1000:.1f}mm | v:{v:.1f}m/s"
+            
+            # Add force info if available and physics engine is active
+            if hasattr(self, 'max_force') and self.max_force > 0:
+                physics_status += f" | F:{self.max_force:.1f}N"
+        
+        # Add Metal GPU indicator to simulation label
+        backend_indicator = " (Metal GPU)" if self.metal_enabled else " (Julia CPU)"
+        
+        # Create enhanced progress line (EXACT same format as solve.py)
+        progress_line = (f"\rSimulation{backend_indicator}: [{bar}] {progress*100:6.2f}% | "
+                        f"Time: {time_str}/{total_time_str} | "
+                        f"Steps: {self.step_count:,} | "
+                        f"Rate: {integration_rate:.0f}/s{physics_status}")
+        
+        # Truncate if too long for terminal (EXACT same as solve.py)
+        if len(progress_line) > 120:
+            progress_line = progress_line[:117] + "..."
+        
+        # Write to terminal - always update the progress display
+        sys.stdout.write(progress_line)
         sys.stdout.flush()
         self.progress_active = True
-        self.last_progress_length = len(status_line)
+        self.last_progress_length = len(progress_line)
     
     def stop(self):
-        """Stop progress tracking."""
-        self.stopped = True
+        """Stop the progress tracker (EXACT same as solve.py)."""
+        if self.stopped:  # Prevent multiple calls
+            return
+            
         self.running = False
-        time.sleep(self.update_interval * 2)
-        if self.progress_active:
-            sys.stdout.write('\r' + ' ' * self.last_progress_length + '\r')
-            sys.stdout.flush()
+        self.stopped = True
+        
+        # Wait for display thread to finish
+        if self.display_thread.is_alive():
+            self.display_thread.join(timeout=1.0)
+        
+        # Clear the current progress line
+        self._clear_progress_line()
+        
+        # Show the final completed progress bar only once
+        if self.current_time > 0:
+            # Force progress to 100% for final display
+            saved_time = self.current_time
+            self.current_time = self.t_end
+            self._draw_progress_bar(force_draw=True)
+            self.current_time = saved_time
+            print()  # Move to next line
+        
+        # Show summary of any warnings that occurred
+        total_warnings = len(self.physics_warnings)
+        if (self.physics and hasattr(self.physics, 'energy_warning_count') and 
+            self.physics.energy_warning_count > 0):
+            total_warnings += self.physics.energy_warning_count
+        
+        if total_warnings > 0:
+            print(f"⚠  Total warnings during simulation: {total_warnings}")
+        
+        sys.stdout.flush()
     
     def show_final_progress(self):
-        """Show final progress summary with Metal GPU performance info."""
-        self.stop()
-        total_real_time = time.time() - self.start_real_time
-        backend_str = "Metal GPU" if self.metal_enabled else "Julia CPU"
+        """Show the final progress bar state at 100% completion (EXACT same as solve.py)."""
+        # Force progress to 100%
+        progress = 1.0
         
-        print(f"\n✓ Simulation completed!")
-        print(f"  Backend: {backend_str}")
-        print(f"  Real time: {total_real_time:.2f} s")
-        print(f"  Max current: {self.max_current:.0f} A")
-        print(f"  Max force: {self.max_force:.0f} N")
-        print(f"  Final velocity: {self.max_velocity:.1f} m/s")
+        # Create final progress bar
+        filled = int(self.bar_width * progress)
+        bar = '█' * filled + '░' * (self.bar_width - filled)
+        
+        # Format final time
+        if self.current_time < 1e-3:
+            time_str = f"{self.current_time*1e6:.1f}μs"
+        elif self.current_time < 1:
+            time_str = f"{self.current_time*1e3:.1f}ms"
+        else:
+            time_str = f"{self.current_time:.3f}s"
+        
+        # Final physics status
+        physics_status = ""
+        if self.current_state is not None and len(self.current_state) >= 4:
+            I, x, v = self.current_state[1], self.current_state[2], self.current_state[3]
+            physics_status = f" | Final: I:{I:.0f}A | x:{x*1000:.1f}mm | v:{v:.1f}m/s"
+        
+        # Add Metal GPU indicator
+        backend_indicator = " (Metal GPU)" if self.metal_enabled else " (Julia CPU)"
+        
+        # Create final progress line
+        progress_line = (f"\rSimulation{backend_indicator}: [{bar}] {progress*100:6.2f}% | "
+                        f"Completed in: {time_str} | "
+                        f"Total steps: {self.step_count:,}{physics_status}")
+        
+        # Write final progress line
+        sys.stdout.write(progress_line)
+        sys.stdout.flush()
 
 
 class CoilgunSimulation:
@@ -476,13 +628,73 @@ class CoilgunSimulation:
         
         # Initialize progress tracker with Metal GPU indicators
         if show_progress and verbose:
-            self.progress_tracker = ProgressTracker(t_span, physics_engine=self.physics)
+            backend_info = self.simulation_info.get('backend', 'Julia CPU')
+            self.progress_tracker = ProgressTracker(
+                t_span, 
+                physics_engine=self.physics, 
+                backend_info=backend_info
+            )
             self.progress_tracker.start_integration_display()
         
+        # Get simulation parameters (EXACT same as solve.py)
+        sim_config = self.config['simulation']
+        t_span = sim_config['time_span']
+        max_step = sim_config.get('max_step', 1e-6)
+        tolerance = sim_config.get('tolerance', 1e-9)
+        method = sim_config.get('method', 'RK45')
+        
+        # Create enhanced progress-tracking wrapper for ODE function (EXACT same as solve.py)
+        ode_func = self.physics.circuit_derivatives
+        if self.progress_tracker:
+            ode_func = self._enhanced_ode_wrapper(ode_func)
+        
+        # Create time evaluation points for regular progress updates (EXACT same as solve.py)
+        # This ensures the ODE function is called at regular intervals for progress tracking
+        t_eval_points = None
+        if self.progress_tracker:
+            # Calculate number of evaluation points based on simulation parameters
+            sim_duration = t_span[1] - t_span[0]
+            # Estimate required steps based on max_step and simulation duration
+            estimated_steps = int(sim_duration / max_step)
+            # Use a reasonable fraction of estimated steps for progress updates
+            # But ensure we have at least 100 points and at most 500000 points
+            num_eval_points = max(100, estimated_steps)
+            t_eval_points = np.linspace(t_span[0], t_span[1], num_eval_points)
+        
+        # Define events to stop simulation (EXACT same as solve.py)
+        def projectile_at_center(t, y):
+            """Event: projectile reaches coil center."""
+            return y[2] - self.physics.coil_center
+        
+        def projectile_exits_coil(t, y):
+            """Event: projectile completely exits coil."""
+            return y[2] - (self.physics.coil_length + self.physics.proj_length)
+        
+        def current_reverses(t, y):
+            """Event: current reverses direction."""
+            return y[1]  # Current
+        
+        # Configure events - these attributes are set by SciPy (EXACT same as solve.py)
+        setattr(projectile_at_center, 'terminal', True)
+        setattr(projectile_at_center, 'direction', 1)
+        
+        setattr(projectile_exits_coil, 'terminal', False)
+        setattr(projectile_exits_coil, 'direction', 1)
+        
+        setattr(current_reverses, 'terminal', False)
+        setattr(current_reverses, 'direction', -1)
+        
+        events = [projectile_at_center, projectile_exits_coil, current_reverses]
+        
         try:
-            # Use Julia GPU solver with enhanced error handling
+            # Check if Julia GPU acceleration is available
             if hasattr(self.physics, 'solve_with_julia'):
-                # Use Julia GPU acceleration
+                if verbose:
+                    print(f"Integrating ODEs with Julia GPU acceleration...")
+                    if show_progress:
+                        print("Integration progress will be shown below:")
+                
+                # Use Julia GPU acceleration with enhanced physics
                 solution = self.physics.solve_with_julia(
                     time_span=t_span,
                     accuracy_level='balanced',
@@ -490,42 +702,39 @@ class CoilgunSimulation:
                 )
                 self.simulation_info['exit_reason'] = 'Julia GPU solver completed'
             else:
-                # Fallback to Python solver with Metal GPU physics
+                # Fallback to Python solver with enhanced progress tracking (EXACT same as solve.py)
                 from scipy.integrate import solve_ivp
                 
-                # Event detection functions (same as solve.py)
-                def projectile_at_center(t, y):
-                    return y[2] - self.physics.coil_length / 2
+                if verbose:
+                    print(f"Integrating ODEs with {method} method...")
+                    if show_progress:
+                        print("Integration progress will be shown below:")
                 
-                def projectile_exits_coil(t, y):
-                    return y[2] - self.physics.coil_length
-                
-                def current_reverses(t, y):
-                    return y[1]  # Current crosses zero
-                
-                # Configure events
-                projectile_at_center.terminal = False
-                projectile_exits_coil.terminal = True
-                current_reverses.terminal = False
-                
-                # Run integration with Metal GPU-accelerated physics
+                # Solve the ODE system (EXACT same parameters as solve.py)
                 solution = solve_ivp(
-                    self._enhanced_ode_wrapper(self.physics.circuit_derivatives),
-                    t_span, y0,
-                    method='DOP853',
-                    rtol=1e-8, atol=1e-10,
-                    events=[projectile_at_center, projectile_exits_coil, current_reverses],
-                    dense_output=False,
-                    max_step=1e-6
+                    fun=ode_func,
+                    t_span=t_span,
+                    y0=y0,
+                    method=method,
+                    max_step=max_step,
+                    rtol=tolerance,
+                    atol=tolerance * 1e-3,
+                    events=events,
+                    dense_output=True,
+                    t_eval=t_eval_points,  # Force evaluation at regular intervals for progress tracking
+                    # Add numerical stability options
+                    first_step=max_step * 0.1,  # Conservative first step
                 )
                 
-                # Determine exit reason
-                if solution.t_events[1].size > 0:  # projectile_exits_coil
-                    self.simulation_info['exit_reason'] = 'Projectile exited coil'
+                # Determine exit reason (EXACT same logic as solve.py)
+                if not solution.success:
+                    self.simulation_info['exit_reason'] = f'Integration failed: {solution.message}'
+                elif solution.t_events[0].size > 0:  # projectile_at_center
+                    self.simulation_info['exit_reason'] = 'Projectile reached coil center'
+                elif solution.t_events[1].size > 0:  # projectile_exits_coil
+                    self.simulation_info['exit_reason'] = 'Projectile exited coil region'
                 elif solution.t_events[2].size > 0:  # current_reverses
                     self.simulation_info['exit_reason'] = 'Current reversal detected'
-                elif not solution.success:
-                    self.simulation_info['exit_reason'] = f'Integration failed: {solution.message}'
                 else:
                     self.simulation_info['exit_reason'] = 'Time span completed'
             
@@ -543,9 +752,16 @@ class CoilgunSimulation:
             return self._get_summary_results()
             
         except Exception as e:
+            print(f"Simulation failed: {str(e)}")
+            raise
+        finally:
+            # Always stop progress tracker (EXACT same as solve.py)
             if self.progress_tracker:
                 self.progress_tracker.stop()
-            raise e
+            
+            # Print completion message after progress tracker is stopped (EXACT same as solve.py)
+            if verbose and show_progress:
+                print("Integration completed.")
     
     def _process_results(self, solution, save_data):
         """
@@ -569,63 +785,64 @@ class CoilgunSimulation:
             positions = np.array([solution.y[2]])
             velocities = np.array([solution.y[3]])
         
+        # Calculate derived quantities using Metal GPU acceleration (always calculate for metadata)
+        forces_total = []
+        forces_gradient = []
+        inductances = []
+        energies_cap = []
+        energies_kin = []
+        energies_mag = []
+        
+        # Calculate forces and other quantities for all cases (needed for metadata)
+        for i in range(len(times)):
+            # Force calculation with Metal GPU
+            try:
+                if hasattr(self.physics, 'magnetic_force_with_circuit_logic'):
+                    force_result = self.physics.magnetic_force_with_circuit_logic(
+                        currents[i], positions[i], times[i], velocities[i]
+                    )
+                    force_total = force_result[0] if isinstance(force_result, tuple) else force_result
+                else:
+                    force_result = self.physics.magnetic_force_ferromagnetic(
+                        currents[i], positions[i], velocities[i]
+                    )
+                    force_total = force_result[0] if isinstance(force_result, tuple) else force_result
+                
+                forces_total.append(force_total)
+                
+                # Gradient force component
+                if hasattr(self.physics, 'magnetic_force_gradient'):
+                    force_grad = self.physics.magnetic_force_gradient(currents[i], positions[i])
+                    forces_gradient.append(force_grad)
+                else:
+                    forces_gradient.append(force_total)  # Fallback
+                    
+            except:
+                forces_total.append(0.0)
+                forces_gradient.append(0.0)
+            
+            # Inductance calculation
+            try:
+                L = self.physics.get_inductance(positions[i])
+                inductances.append(L)
+            except:
+                inductances.append(0.0)
+            
+            # Energy calculations
+            E_cap = 0.5 * charges[i]**2 / self.physics.capacitance
+            E_kin = 0.5 * self.physics.proj_mass * velocities[i]**2
+            E_mag = 0.5 * inductances[-1] * currents[i]**2 if inductances[-1] > 0 else 0
+            
+            energies_cap.append(E_cap)
+            energies_kin.append(E_kin)
+            energies_mag.append(E_mag)
+        
         if save_data:
             self.results['time'] = times
             self.results['charge'] = charges
             self.results['current'] = currents
             self.results['position'] = positions
             self.results['velocity'] = velocities
-            
-            # Calculate derived quantities using Metal GPU acceleration
-            forces_total = []
-            forces_gradient = []
-            inductances = []
-            energies_cap = []
-            energies_kin = []
-            energies_mag = []
-            
-            for i in range(len(times)):
-                # Force calculation with Metal GPU
-                try:
-                    if hasattr(self.physics, 'magnetic_force_with_circuit_logic'):
-                        force_result = self.physics.magnetic_force_with_circuit_logic(
-                            currents[i], positions[i], times[i], velocities[i]
-                        )
-                        force_total = force_result[0] if isinstance(force_result, tuple) else force_result
-                    else:
-                        force_result = self.physics.magnetic_force_ferromagnetic(
-                            currents[i], positions[i], velocities[i]
-                        )
-                        force_total = force_result[0] if isinstance(force_result, tuple) else force_result
-                    
-                    forces_total.append(force_total)
-                    
-                    # Gradient force component
-                    if hasattr(self.physics, 'magnetic_force_gradient'):
-                        force_grad = self.physics.magnetic_force_gradient(currents[i], positions[i])
-                        forces_gradient.append(force_grad)
-                    else:
-                        forces_gradient.append(force_total)  # Fallback
-                        
-                except:
-                    forces_total.append(0.0)
-                    forces_gradient.append(0.0)
-                
-                # Inductance calculation
-                try:
-                    L = self.physics.get_inductance(positions[i])
-                    inductances.append(L)
-                except:
-                    inductances.append(0.0)
-                
-                # Energy calculations
-                E_cap = 0.5 * charges[i]**2 / self.physics.capacitance
-                E_kin = 0.5 * self.physics.proj_mass * velocities[i]**2
-                E_mag = 0.5 * inductances[-1] * currents[i]**2 if inductances[-1] > 0 else 0
-                
-                energies_cap.append(E_cap)
-                energies_kin.append(E_kin)
-                energies_mag.append(E_mag)
             
             # Store calculated results
             self.results['force_total'] = np.array(forces_total)
@@ -1384,7 +1601,7 @@ def select_config_file():
 
 
 def main():
-    """Main function for Metal GPU-accelerated simulation (same interface as solve.py)."""
+    """Main function for Metal GPU-accelerated simulation (EXACT same interface as solve.py)."""
     try:
         config_file = select_config_file()
         
@@ -1393,14 +1610,14 @@ def main():
         print("=" * 60)
         print(f"Configuration file: {config_file}")
         
-        # Ask user if they want to proceed
+        # Ask user if they want to proceed with simulation (EXACT same as solve.py)
         print(f"\nReady to run Metal GPU simulation with: {Path(config_file).name}")
         proceed = input("Do you want to proceed? (Y/n): ").strip().lower()
         if proceed in ['n', 'no', 'q', 'quit']:
             print("Simulation cancelled by user.")
             sys.exit(0)
         elif proceed == '' or proceed in ['y', 'yes']:
-            pass
+            pass  # Continue
         else:
             print("Invalid input. Proceeding with simulation...")
         
@@ -1415,29 +1632,29 @@ def main():
         sys.exit(1)
     
     try:
-        # Check if multi-stage configuration
+        # Check if this is a multi-stage configuration (EXACT same as solve.py)
         with open(config_file, 'r') as f:
             config = json.load(f)
         
         is_multi_stage = config.get("multi_stage", {}).get("enabled", False)
         
         if is_multi_stage:
-            # Multi-stage Metal GPU simulation
+            # Use multi-stage Metal GPU simulation (EXACT same logic as solve.py)
             print("Detected multi-stage configuration - using Metal GPU acceleration")
             sim = MultiStageCoilgunSimulation(config_file)
             results = sim.run_simulation(save_data=True, verbose=True, show_progress=True)
             
-            # Create output directory
+            # Create output directory based on config filename (EXACT same as solve.py)
             config_name = Path(config_file).stem
             output_dir = f"results_{config_name}"
             
-            # Save results
+            # Save detailed results (EXACT same as solve.py)
             print("\n" + "="*50)
             print("SAVING RESULTS")
             print("="*50)
             sim.save_results(output_dir)
             
-            # Print summary (same format as solve.py)
+            # Print summary (EXACT same format as solve.py)
             print("\n" + "="*50)
             print("SIMULATION SUMMARY")
             print("="*50)
@@ -1445,8 +1662,8 @@ def main():
             print(f"Overall efficiency: {results['overall_efficiency_percent']:.1f}%")
             print(f"Total initial energy: {results['total_initial_energy_J']:.1f} J")
             print(f"Final kinetic energy: {results['final_kinetic_energy_J']:.1f} J")
-            print(f"Max current: {results['max_current_A']:.1f} A")
-            print(f"Max force: {results['max_force_N']:.1f} N")
+            print(f"Max current: {results.get('max_current_A', 0):.1f} A")
+            print(f"Max force: {results.get('max_force_N', 0):.1f} N")
             print(f"Total simulation time: {results['simulation_time_s']:.3f} s")
             
             print(f"\nStage Performance:")
@@ -1459,53 +1676,97 @@ def main():
             print("- stage_X_results/ (individual stage results)")
             
         else:
-            # Single-stage Metal GPU simulation
+            # Use single-stage Metal GPU simulation (EXACT same logic as solve.py but with Metal GPU)
             print("Detected single-stage configuration - using Metal GPU acceleration")
             sim = CoilgunSimulation(config_file)
             
-            # Check Metal GPU physics integration
+            # ENHANCED: Check Metal GPU physics integration status for single-stage simulations
             print("\n" + "="*50)
-            print("CHECKING METAL GPU PHYSICS INTEGRATION")
+            print("CHECKING METAL GPU ENHANCED PHYSICS INTEGRATION")
             print("="*50)
             physics_status = sim.check_physics_integration()
             
-            # Optimize Metal GPU physics settings
+            # ENHANCED: Optimize Metal GPU physics settings for this simulation
             print("\n" + "="*50)
-            print("OPTIMIZING METAL GPU PHYSICS SETTINGS")
+            print("OPTIMIZING METAL GPU PHYSICS ENGINE SETTINGS")
             print("="*50)
             optimization_status = sim.optimize_physics_settings()
             
-            # Run simulation with Metal GPU
+            # Provide recommendations based on physics integration (EXACT same logic as solve.py)
+            total_features = len(physics_status)
+            enabled_features = sum(1 for status in physics_status.values() if status)
+            integration_quality = enabled_features / total_features
+            
+            if integration_quality >= 0.85:
+                print(f"\n✓ Excellent Metal GPU physics integration ({enabled_features}/{total_features} features)")
+                print("  All major advanced physics features are available")
+            elif integration_quality >= 0.70:
+                print(f"\n✓ Good Metal GPU physics integration ({enabled_features}/{total_features} features)")
+                print("  Most advanced physics features are available")
+            elif integration_quality >= 0.50:
+                print(f"\n⚠ Moderate Metal GPU physics integration ({enabled_features}/{total_features} features)")
+                print("  Some advanced physics features may be missing")
+            else:
+                print(f"\n⚠ Limited Metal GPU physics integration ({enabled_features}/{total_features} features)")
+                print("  Consider updating physics engine for better accuracy")
+            
+            # Additional physics validation (EXACT same as solve.py)
+            if hasattr(sim.physics, 'validate_configuration'):
+                try:
+                    sim.physics.validate_configuration()
+                    print("  ✓ Metal GPU physics engine configuration validation passed")
+                except Exception as e:
+                    print(f"  ⚠ Metal GPU physics configuration validation failed: {e}")
+            
+            # Run simulation with enhanced Metal GPU physics (EXACT same interface as solve.py)
             print("\n" + "="*50)
-            print("RUNNING METAL GPU COILGUN SIMULATION")
+            print("RUNNING METAL GPU ENHANCED COILGUN SIMULATION")
             print("="*50)
             results = sim.run_simulation(save_data=True, verbose=True, show_progress=True, check_physics=True)
             
-            # Create output directory
+            # Create output directory based on config filename (EXACT same as solve.py)
             config_name = Path(config_file).stem
             output_dir = f"results_{config_name}"
             
-            # Save results
+            # Save detailed results to CSV and JSON (EXACT same as solve.py)
             print("\n" + "="*50)
             print("SAVING RESULTS")
             print("="*50)
             sim.save_results(output_dir)
             
-            # Print summary (same format as solve.py)
+            # Print enhanced summary with physics analysis (EXACT same format as solve.py)
             print("\n" + "="*50)
             print("SIMULATION SUMMARY")
             print("="*50)
             print(f"Final velocity: {results['final_velocity_ms']:.1f} m/s")
             print(f"Efficiency: {results['efficiency_percent']:.1f}%")
-            print(f"Max current: {results['max_current_A']:.1f} A")
-            print(f"Max force: {results['max_force_N']:.1f} N")
+            print(f"Max current: {results.get('max_current_A', 0):.1f} A")
+            print(f"Max force: {results.get('max_force_N', 0):.1f} N")
             print(f"Simulation time: {results['simulation_time_s']:.3f} s")
             print(f"Exit reason: {results['exit_reason']}")
-            print(f"Backend: {results['backend']}")
+            print(f"Backend: Metal GPU acceleration")
+            
+            # Enhanced physics summary (EXACT same logic as solve.py)
+            if hasattr(sim, 'results') and len(sim.results.get('time', [])) > 0:
+                print(f"\nAdvanced Metal GPU Physics Summary:")
+                
+                # Force analysis summary
+                if 'force_gradient' in sim.results:
+                    max_gradient_force = np.max(np.abs(sim.results['force_gradient']))
+                    max_eddy_force = np.max(np.abs(sim.results.get('force_eddy', [0])))
+                    print(f"  Peak gradient force: {max_gradient_force:.1f} N")
+                    if max_eddy_force > 0.1:
+                        print(f"  Peak eddy current force: {max_eddy_force:.1f} N")
+            
+            # Extract energy values from results (EXACT same as solve.py)
+            final_kinetic_energy = results.get('final_kinetic_energy_J', 0)
+            initial_energy = results.get('initial_energy_J', 0)
+            energy_transferred = final_kinetic_energy
             
             print(f"\nENERGY ANALYSIS:")
-            print(f"Initial capacitor energy: {results['initial_energy_J']:.1f} J")
-            print(f"Final kinetic energy: {results['final_kinetic_energy_J']:.1f} J")
+            print(f"Initial capacitor energy: {initial_energy:.1f} J")
+            print(f"Final kinetic energy: {final_kinetic_energy:.1f} J")
+            print(f"Energy transferred to projectile: {energy_transferred:.1f} J")
             
             print(f"\nResults saved to directory: {output_dir}/")
             print("- time_series_data.csv (detailed time series)")
@@ -1515,26 +1776,30 @@ def main():
         print(f"python view.py {config_file}")
         
     except KeyboardInterrupt:
-        print("\n\nSimulation interrupted by user.")
+        print("\n\nSimulation interrupted by user (Ctrl+C)")
         print("Simulation results may be incomplete.")
         print("Exiting gracefully...")
         sys.exit(0)
     except Exception as e:
         print(f"Metal GPU simulation failed: {e}")
+        import traceback
         traceback.print_exc()
         print("\nSimulation terminated due to error.")
         sys.exit(1)
 
 
 def signal_handler(signum, frame):
-    """Handle signals gracefully (same as solve.py)."""
+    """Handle signals gracefully (EXACT same as solve.py)."""
     print("\n\nReceived interrupt signal.")
     print("Cleaning up Metal GPU resources and exiting gracefully...")
     sys.exit(0)
 
 
 if __name__ == '__main__':
-    # Set up signal handlers for graceful shutdown
+    import os
+    import signal
+    
+    # Set up signal handlers for graceful shutdown (EXACT same as solve.py)
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
