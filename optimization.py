@@ -10,12 +10,16 @@ Optimization Strategy:
 - Multi-objective scoring optimizes for efficiency, energy consumption, design complexity,
   current management, and practical feasibility
 - Lower scores indicate better configurations among valid configurations
+- Tracks and saves all configurations that tie for the best score
+- Graceful interruption support: Press Ctrl+C to stop early and save current progress
 """
 
 import json
 import numpy as np
 import csv
 import os
+import signal
+import sys
 from typing import Dict, Any, List, Tuple
 from solve import CoilgunSimulation, MultiStageCoilgunSimulation  # Make sure solve.py is in your PYTHONPATH
 
@@ -265,6 +269,19 @@ def calculate_optimization_score(velocity, target_velocity, efficiency, max_curr
     Note: Velocity is a hard requirement (must be >= target_velocity for validity).
     This function only scores valid configurations based on efficiency and practicality.
     
+    Scoring Components (Total: 0-250 points, lower is better):
+    1. Efficiency (0-100): Penalizes low efficiency designs
+    2. Energy Consumption (0-60): Favors lower energy requirements  
+    3. Design Complexity (0-40): Penalizes overly complex designs
+    4. Current Management (0-30): Penalizes high currents with graduated thresholds:
+       - ≤1000A: No penalty (safe range for industrial applications)
+       - 1001-3000A: Moderate penalty (requires specialized equipment)
+       - >3000A: Heavy penalty (extreme high-power territory)
+    5. Practical Feasibility (0-20): Penalizes unsafe/impractical combinations:
+       - Thin wire + many turns (heating issues)
+       - Extremely high current >5000A (beyond most practical systems)
+       - High voltage >400V (safety concerns, industrial limits at 600V)
+    
     Args:
         velocity: Final projectile velocity (m/s) - unused in scoring, only for validation
         target_velocity: Target velocity (m/s) - unused in scoring, only for validation
@@ -275,38 +292,46 @@ def calculate_optimization_score(velocity, target_velocity, efficiency, max_curr
     
     Returns:
         float: Composite score (lower is better)
-    """
-    # 1. Efficiency score (0-50)
+    """# 1. Efficiency score (0-100)
     # Higher efficiency = lower score (we want high efficiency)
-    efficiency_score = max(0, 50 - efficiency)
+    efficiency_score = max(0, 100 - efficiency)
     
-    # 2. Energy consumption score (0-30)
+    # 2. Energy consumption score (0-60)
     # Favor lower energy designs
-    energy_factor = params["voltage"] * params["capacitance"] * 0.5  # E = 0.5*C*V^2
-    energy_score = min(30, energy_factor / 1000)  # Normalize to reasonable range
+    energy_factor = params["voltage"] ** 2 * params["capacitance"] * 0.5  # E = 0.5*C*V^2
+    energy_score = min(60, energy_factor / 8000)  # Normalize to reasonable range
     
-    # 3. Complexity penalty (0-20)
+    # 3. Complexity penalty (0-40)
     # Penalize overly complex designs
     num_stages = params.get("stages", 1)
     num_layers = config["stages"][0]["coil"]["num_layers"]
-    complexity_score = min(20, (num_stages - 1) * 3 + (num_layers - 1) * 2)
-    
-    # 4. Current management score (0-15)
-    # Penalize excessive current draw
-    current_score = min(15, max(0, max_current - 50) * 0.1)
-    
-    # 5. Practical feasibility (0-10)
-    # Penalize extreme parameter combinations
+    complexity_score = min(40, (num_stages - 1) * 5 + (num_layers - 1) * 3)    
+
+    # 4. Current management score (0-30)
+    # Penalize excessive current draw (adjusted for high-power applications)
+    # Safe operating range: <1000A (minimal penalty), 1000-3000A (moderate), >3000A (heavy penalty)
+    if max_current <= 1000:
+        current_score = 0  # Safe range - no penalty
+    elif max_current <= 3000:
+        current_score = min(20, (max_current - 1000) * 0.01)  # Moderate penalty: 0-20 points
+    else:
+        current_score = min(30, 20 + (max_current - 3000) * 0.005)  # Heavy penalty: 20-30 points
+
+    # 5. Practical feasibility (0-20)
+    # Penalize extreme parameter combinations that affect safety and practicality
     wire_gauge = params["wire_gauge"]
     turns = params["turns_per_layer"]
     feasibility_score = 0
-    
-    # Check for unrealistic combinations
-    if wire_gauge <= 16 and turns > 200:  # Thin wire, many turns = heating issues
+      # Check for unrealistic combinations
+    if wire_gauge >= 16 and turns > 200:  # Thin wire (high AWG), many turns = heating issues
+        feasibility_score += 8
+    if max_current > 5000:  # Extremely high current - beyond most practical systems
+        feasibility_score += 10
+    elif max_current > 3000:  # Very high current - requires specialized equipment
         feasibility_score += 5
-    if max_current > 100:  # Very high current
-        feasibility_score += 3
-    if params["voltage"] > 400:  # High voltage safety concerns
+    if params["voltage"] > 600:  # High voltage safety concerns (industrial limit)
+        feasibility_score += 6
+    elif params["voltage"] > 400:  # Moderate high voltage
         feasibility_score += 2
     
     # Total composite score (no velocity component - that's just a hard requirement)
@@ -375,10 +400,14 @@ def simulate_and_score(params, materials, wire_spec, target_velocity):
 def optimize_coilgun(params, materials, wire_spec, target_velocity, total_combinations):
     """
     Iterate through all parameter combinations, run full simulation for each,
-    and find the best configuration. Shows a progress bar.
+    and find the best configuration. Supports graceful interruption with Ctrl+C.
     """
+    # Initialize interrupt handler
+    interrupt_handler = OptimizationInterrupt()
+    
     best_config = None
     best_score = float('inf')
+    best_configs = []  # List to store all configurations with the best score
     results_list = []
     stages_min, stages_max, stages_step = params["stages"]
     wire_gauge_min, wire_gauge_max = params["wire_gauge"]
@@ -387,65 +416,149 @@ def optimize_coilgun(params, materials, wire_spec, target_velocity, total_combin
     voltage_min, voltage_max, voltage_step = params["voltage"]
     cap_min, cap_max, cap_step = params["capacitance"]
 
-    # Optimization header    print("\n" + "=" * 25)
+    # Optimization header
+    print("\n" + "=" * 25)
     print("Optimization Process")
     print("=" * 25 + "\n")
+    print("Press Ctrl+C at any time to interrupt and save current progress")
+    print("-" * 50)
     
-    # Progress bar setup    
+    # Progress tracking setup
+    progress_count = 0
+    next_report = max(1, total_combinations // 20)  # Report every 5% instead of 10%
+    last_percent_reported = 0
+    
+    print(f"Starting optimization of {total_combinations} parameter combinations...")
+    
+    # Initialize progress bar if tqdm is available
     if TQDM_AVAILABLE:
-        pbar = tqdm(total=total_combinations, desc="Optimizing")
+        print("Using progress bar (tqdm available)")
+        pbar = None  # Will be created when loops start
     else:
         pbar = None
-        progress_count = 0
+        print("Progress will be shown every 5%...")
+    
+    print("-" * 50)
 
-    for stages in range(stages_min, stages_max + 1, stages_step):
-        for wire_gauge in range(wire_gauge_min, wire_gauge_max + 1, 1):
-            if str(wire_gauge) not in wire_spec["awg_diameter_mm"]:
-                continue
-            for layers in range(layers_min, layers_max + 1, layers_step):
-                for turns_per_layer in range(turns_min, turns_max + 1, turns_step):
-                    for voltage in range(voltage_min, voltage_max + 1, voltage_step):
-                        num_steps = int(round((cap_max - cap_min) / cap_step)) + 1
-                        for capacitance in np.linspace(cap_min, cap_max, num_steps):
-                            candidate = params.copy()
-                            candidate.update({
-                                "stages": stages,
-                                "wire_gauge": wire_gauge,
-                                "layers": layers,
-                                "turns_per_layer": turns_per_layer,
-                                "voltage": voltage,
-                                "capacitance": capacitance
-                            })
-                            
-                            sim_result = simulate_and_score(candidate, materials, wire_spec, target_velocity)
-                            if sim_result["valid"]:
-                                # Store only the simulation metrics, not the raw results
-                                sim_metrics = {
-                                    "velocity": sim_result["velocity"],
-                                    "max_current": sim_result["max_current"],
-                                    "max_force": sim_result["max_force"],
-                                    "efficiency": sim_result["efficiency"],
-                                    "stage_results": sim_result["stage_results"]
-                                }
-                                results_list.append({**candidate, **sim_metrics})
-                                if sim_result["score"] < best_score:
-                                    best_score = sim_result["score"]
-                                    best_config = sim_result
-                            if TQDM_AVAILABLE:
-                                pbar.update(1)
-                            else:
+    try:        # Create progress bar just before starting the loops to avoid blank bar
+        if TQDM_AVAILABLE:
+            pbar = tqdm(total=total_combinations, desc="Optimizing", 
+                       unit="config", leave=True, ascii=True, miniters=1)
+        else:
+            pbar = None
+        
+        for stages in range(stages_min, stages_max + 1, stages_step):
+            for wire_gauge in range(wire_gauge_min, wire_gauge_max + 1, 1):
+                if str(wire_gauge) not in wire_spec["awg_diameter_mm"]:
+                    continue
+                for layers in range(layers_min, layers_max + 1, layers_step):
+                    for turns_per_layer in range(turns_min, turns_max + 1, turns_step):
+                        for voltage in range(voltage_min, voltage_max + 1, voltage_step):
+                            num_steps = int(round((cap_max - cap_min) / cap_step)) + 1
+                            for capacitance in np.linspace(cap_min, cap_max, num_steps):
+                                # Check for interrupt
+                                if interrupt_handler.interrupted:
+                                    raise KeyboardInterrupt("User interrupted optimization")
+                                
+                                candidate = params.copy()
+                                candidate.update({
+                                    "stages": stages,
+                                    "wire_gauge": wire_gauge,
+                                    "layers": layers,
+                                    "turns_per_layer": turns_per_layer,
+                                    "voltage": voltage,
+                                    "capacitance": capacitance
+                                })
+                                
+                                sim_result = simulate_and_score(candidate, materials, wire_spec, target_velocity)
+                                if sim_result["valid"]:
+                                    # Store only the simulation metrics, not the raw results
+                                    sim_metrics = {
+                                        "velocity": sim_result["velocity"],
+                                        "max_current": sim_result["max_current"],
+                                        "max_force": sim_result["max_force"],
+                                        "efficiency": sim_result["efficiency"],
+                                        "stage_results": sim_result["stage_results"]
+                                    }
+                                    results_list.append({**candidate, **sim_metrics})
+                                    
+                                    # Handle best score tracking with tie support
+                                    if sim_result["score"] < best_score:
+                                        # New best score found - clear previous ties and set new best
+                                        best_score = sim_result["score"]
+                                        best_config = sim_result
+                                        best_configs = [sim_result.copy()]  # Start new list with this config
+                                    elif sim_result["score"] == best_score:
+                                        # Tie with current best score - add to list
+                                        best_configs.append(sim_result.copy())
+                                
+                                # Update progress
                                 progress_count += 1
-                                if progress_count % max(1, total_combinations // 100) == 0:
-                                    percent = (progress_count / total_combinations) * 100
-                                    print(f"Progress: {percent:.1f}%")
-    if TQDM_AVAILABLE:
+                                
+                                # Update progress bar or print progress
+                                if TQDM_AVAILABLE and pbar:
+                                    pbar.update(1)
+                                    # Disable description updates to prevent display issues
+                                    # if progress_count % 100 == 0:
+                                    #     valid_found = len(results_list)
+                                    #     pbar.set_description(f"Optimizing (Valid: {valid_found})")
+                                else:
+                                    # Fallback to print-based progress
+                                    current_percent = int((progress_count / total_combinations) * 100)
+                                    
+                                    # Report every 5% or every 100 combinations, whichever is more frequent
+                                    if (current_percent > last_percent_reported and current_percent % 5 == 0) or \
+                                       (progress_count % max(1, min(100, total_combinations // 20)) == 0) or \
+                                       (progress_count == total_combinations):
+                                        
+                                        valid_found = len(results_list)
+                                        print(f"Progress: {current_percent:3d}% ({progress_count:,}/{total_combinations:,}) - Valid configs found: {valid_found}")
+                                        last_percent_reported = current_percent
+                                  # Update interrupt handler with current progress
+                                interrupt_handler.update_progress(best_config, results_list, progress_count, total_combinations)
+
+    except KeyboardInterrupt:
+        # Close progress bar if it exists
+        if TQDM_AVAILABLE and pbar:
+            pbar.close()
+            
+        # Handle graceful interruption
+        best_config = interrupt_handler.best_config
+        results_list = interrupt_handler.results_list
+        progress_count = interrupt_handler.progress_count
+        
+        print(f"\nOptimization interrupted after {progress_count} combinations.")
+        print("Saving current progress...")
+        
+        # Save partial results immediately
+        if results_list:
+            timestamp = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
+            partial_csv_filename = f"partial_optimization_results_{timestamp}.csv"
+            save_results_to_csv(results_list, partial_csv_filename)
+            print(f"Partial results saved to: {partial_csv_filename}")
+            
+            if best_config:
+                partial_config_filename = f"partial_best_config_{timestamp}.json"
+                save_best_config_to_json(best_config, partial_config_filename, materials, wire_spec)
+                print(f"Best configuration saved to: {partial_config_filename}")
+        else:
+            print("No valid configurations found before interruption.")
+      # Close progress bar for normal completion
+    if TQDM_AVAILABLE and pbar:
         pbar.close()
     
-    print("\nOptimization completed!")
-    
-    # Display best configuration details
+    # Final completion message
+    if not interrupt_handler.interrupted:
+        print("\nOptimization completed successfully!")
+      # Display best configuration details
     if best_config and best_config.get("valid", False):
         print(f"\nBest configuration found with score: {best_score:.2f}")
+        
+        # Check for tied configurations
+        if len(best_configs) > 1:
+            print(f"⚖️  TIED CONFIGURATIONS: {len(best_configs)} configurations achieved the same best score!")
+            print("All tied configurations will be saved for your review.")
+        
         # Extract necessary parameters for score explanation
         best_params = best_config.get("params", {})
         temp_config = build_config_dict(best_params, materials, wire_spec)
@@ -454,6 +567,11 @@ def optimize_coilgun(params, materials, wire_spec, target_velocity, total_combin
             best_config["efficiency"], best_config["max_current"],
             best_params, temp_config, best_score
         )
+        
+        # Save tied configurations if any exist
+        if len(best_configs) > 1:
+            timestamp = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_tied_configs_to_json(best_configs, f"best_tied_configs_{timestamp}", materials, wire_spec)
     else:
         print("\nNo valid configurations found that meet the target velocity.")
     
@@ -470,6 +588,80 @@ def save_results_to_csv(results_list, filename):
         writer.writeheader()
         for row in results_list:
             writer.writerow(row)
+
+def save_best_config_to_json(best_config, filename, materials, wire_spec):
+    """Save the best configuration as a JSON file suitable for simulation."""
+    if not best_config or not best_config.get("valid", False):
+        print("No valid configuration to save.")
+        return
+    
+    try:
+        # Extract parameters from best_config
+        best_params = best_config.get("params", {})
+        
+        # Build the complete configuration using existing function
+        config = build_config_dict(best_params, materials, wire_spec)
+        
+        # Add optimization metadata
+        config["optimization_metadata"] = {
+            "score": best_config.get("score", 0),
+            "velocity_achieved": best_config.get("velocity", 0),
+            "efficiency": best_config.get("efficiency", 0),
+            "max_current": best_config.get("max_current", 0),
+            "max_force": best_config.get("max_force", 0),
+            "stage_results": best_config.get("stage_results", []),
+            "optimization_timestamp": __import__('datetime').datetime.now().isoformat()
+        }
+        
+        # Save to JSON
+        with open(filename, 'w') as f:
+            json.dump(config, f, indent=4)
+        
+        print(f"Configuration saved successfully to {filename}")
+        
+    except Exception as e:
+        print(f"Error saving configuration: {e}")
+
+def save_tied_configs_to_json(best_configs, filename_prefix, materials, wire_spec):
+    """Save all tied best configurations as separate JSON files."""
+    if not best_configs:
+        print("No tied configurations to save.")
+        return
+    
+    print(f"\nSaving {len(best_configs)} tied configurations...")
+    
+    for i, config in enumerate(best_configs):
+        try:
+            # Extract parameters from config
+            best_params = config.get("params", {})
+            
+            # Build the complete configuration
+            full_config = build_config_dict(best_params, materials, wire_spec)
+            
+            # Add optimization metadata
+            full_config["optimization_metadata"] = {
+                "score": config.get("score", 0),
+                "velocity_achieved": config.get("velocity", 0),
+                "efficiency": config.get("efficiency", 0),
+                "max_current": config.get("max_current", 0),
+                "max_force": config.get("max_force", 0),
+                "stage_results": config.get("stage_results", []),
+                "tie_rank": i + 1,
+                "total_tied_configs": len(best_configs),
+                "optimization_timestamp": __import__('datetime').datetime.now().isoformat()
+            }
+            
+            # Create filename for this tied config
+            tied_filename = f"{filename_prefix}_tied_config_{i+1}_of_{len(best_configs)}.json"
+            
+            # Save to JSON
+            with open(tied_filename, 'w') as f:
+                json.dump(full_config, f, indent=4)
+            
+            print(f"  Saved tied config {i+1}: {tied_filename}")
+            
+        except Exception as e:
+            print(f"  Error saving tied config {i+1}: {e}")
 
 def explain_score(velocity, target_velocity, efficiency, max_current, params, config, score):
     """
@@ -490,38 +682,99 @@ def explain_score(velocity, target_velocity, efficiency, max_current, params, co
     print(f"  - Turns/Layer: {params['turns_per_layer']}")
     print(f"  - Voltage: {params['voltage']} V")
     print(f"  - Capacitance: {params['capacitance']:.3f} F")
-    
-    # Calculate individual score components for breakdown
-    efficiency_score = max(0, 50 - efficiency)
-    energy_factor = params["voltage"] * params["capacitance"] * 0.5
-    energy_score = min(30, energy_factor / 1000)
+      # Calculate individual score components for breakdown (using new ranges)
+    efficiency_score = max(0, 100 - efficiency)
+    energy_factor = params["voltage"] ** 2 * params["capacitance"] * 0.5
+    energy_score = min(60, energy_factor / 8000)
     
     num_stages = params.get("stages", 1)
     num_layers = config["stages"][0]["coil"]["num_layers"]
-    complexity_score = min(20, (num_stages - 1) * 3 + (num_layers - 1) * 2)
-    
-    current_score = min(15, max(0, max_current - 50) * 0.1)
-    
-    # Calculate feasibility score
+    complexity_score = min(40, (num_stages - 1) * 5 + (num_layers - 1) * 3)
+      # Calculate current score using new thresholds
+    if max_current <= 1000:
+        current_score = 0  # Safe range - no penalty
+    elif max_current <= 3000:
+        current_score = min(20, (max_current - 1000) * 0.01)  # Moderate penalty: 0-20 points
+    else:
+        current_score = min(30, 20 + (max_current - 3000) * 0.005)  # Heavy penalty: 20-30 points
+      # Calculate feasibility score
     wire_gauge = params["wire_gauge"]
     turns = params["turns_per_layer"]
     feasibility_score = 0
-    if wire_gauge <= 16 and turns > 200:
-        feasibility_score += 5
-    if max_current > 100:
-        feasibility_score += 3
-    if params["voltage"] > 400:
-        feasibility_score += 2
     
+    if wire_gauge <= 16 and turns > 200:
+        feasibility_score += 8
+    
+    if max_current > 5000:  # Extremely high current - beyond most practical systems
+        feasibility_score += 10
+    elif max_current > 3000:  # Very high current - requires specialized equipment
+        feasibility_score += 5
+    
+    if params["voltage"] > 600:  # High voltage safety concerns (industrial limit)
+        feasibility_score += 6
+    elif params["voltage"] > 400:  # Moderate high voltage
+        feasibility_score += 2
+
     print(f"\nScore Components:")
-    print(f"  - Efficiency: {efficiency_score:.1f}/50 (50 - {efficiency:.1f}%)")
-    print(f"  - Energy Consumption: {energy_score:.1f}/30")
-    print(f"  - Design Complexity: {complexity_score:.1f}/20")
-    print(f"  - Current Management: {current_score:.1f}/15")
-    print(f"  - Practical Feasibility: {feasibility_score:.1f}/10")
+    print(f"  - Efficiency: {efficiency_score:.1f}/100 (100 - {efficiency:.1f}%)")
+    print(f"  - Energy Consumption: {energy_score:.1f}/60 (E = ½CV² = {energy_factor:.0f}J)")
+    print(f"  - Design Complexity: {complexity_score:.1f}/40 ({num_stages} stages, {num_layers} layers)")
+    print(f"  - Current Management: {current_score:.1f}/30 ({max_current:.0f}A)")
+    if max_current <= 1000:
+        print(f"    └─ Safe range (≤1000A): No penalty")
+    elif max_current <= 3000:
+        print(f"    └─ Moderate range (1001-3000A): Requires specialized equipment")
+    else:
+        print(f"    └─ High range (>3000A): Extreme high-power territory")
+    print(f"  - Practical Feasibility: {feasibility_score:.1f}/20")
+    if feasibility_score > 0:
+        print(f"    └─ Penalties for:")
+        if wire_gauge >= 16 and turns > 200:
+            print(f"      • Thin wire (≥{wire_gauge} AWG) + many turns (heating risk): +8")
+        if max_current > 5000:
+            print(f"      • Extremely high current (>5000A): +10")
+        elif max_current > 3000:
+            print(f"      • Very high current (>3000A): +5") 
+        if params["voltage"] > 600:
+            print(f"      • High voltage (>{params['voltage']}V > 500V limit): +6")
+        elif params["voltage"] > 400:
+            print(f"      • Moderate high voltage (>{params['voltage']}V): +2")
     print(f"\nNote: Velocity is a hard requirement, not scored.")
     print(f"Only configurations meeting target velocity are considered valid.")
+    print(f"Current thresholds reflect industrial/research-grade coilgun safety standards.")
     print(f"{'='*50}")
+
+class OptimizationInterrupt:
+    """Class to handle graceful interruption of optimization process."""
+    
+    def __init__(self):
+        self.interrupted = False
+        self.best_config = None
+        self.results_list = []
+        self.progress_count = 0
+        self.total_combinations = 0
+        
+        # Set up signal handler for Ctrl+C
+        signal.signal(signal.SIGINT, self.signal_handler)
+    
+    def signal_handler(self, signum, frame):
+        """Handle interrupt signal (Ctrl+C)."""
+        print(f"\n\n{'='*50}")
+        print("OPTIMIZATION INTERRUPTED BY USER")
+        print(f"{'='*50}")
+        print(f"Progress: {self.progress_count}/{self.total_combinations} combinations tested")
+        if self.progress_count > 0:
+            percent = (self.progress_count / self.total_combinations) * 100
+            print(f"Completed: {percent:.1f}% of total optimization")
+        print("Saving current progress...")
+        self.interrupted = True
+    
+    def update_progress(self, best_config, results_list, progress_count, total_combinations):
+        """Update the current state of optimization."""
+        self.best_config = best_config
+        self.results_list = results_list[:]  # Copy the list
+        self.progress_count = progress_count
+        self.total_combinations = total_combinations
 
 def main():
     """
@@ -533,6 +786,11 @@ def main():
     print("\nWelcome to the Coilgun Optimization Tool!")
     print("This tool will help you find the optimal configuration for your coilgun design.")
     print("Please follow the prompts to enter your design parameters.")
+    print("\n" + "=" * 50)
+    print("INTERRUPT FEATURE:")
+    print("You can press Ctrl+C at any time during optimization to stop early")
+    print("and save the current best configuration and all valid results found.")
+    print("=" * 50)
 
     # Load materials and wire specs
     materials = load_material_data()
