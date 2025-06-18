@@ -48,13 +48,13 @@ import time
 
 # Import our simulation modules
 try:
-    from equations import CoilgunPhysicsEngine
-    from solve import CoilgunSimulation, MultiStageCoilgunSimulation
+    from old.equations import CoilgunPhysicsEngine
+    from old.solve import CoilgunSimulation, MultiStageCoilgunSimulation
 except ImportError as e:
     print(f"Error importing required modules: {e}")
     print("Please ensure equations.py and solve.py are in the same directory.")
     sys.exit(1)
-from view import CoilgunFieldVisualizer
+from old.view import CoilgunFieldVisualizer
 
 class Arrow3D(FancyArrowPatch):
     """3D arrow patch for better arrow rendering in 3D."""
