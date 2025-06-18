@@ -1,0 +1,95 @@
+{
+    "coil": {
+        "inner_diameter": 0.0508,
+        "length": 0.064,
+        "wire_gauge_awg": "12",
+        "num_layers": 3,
+        "wire_material": "Copper",
+        "insulation_thickness": 5e-05,
+        "packing_factor": 0.9
+    },
+    "projectile": {
+        "diameter": 0.05,
+        "length": 0.064,
+        "material": "Pure_Iron",
+        "initial_position": -0.05,
+        "initial_velocity": 0.0
+    },
+    "capacitor": {
+        "capacitance": 0.0033,
+        "initial_voltage": 900.0,
+        "esr": 0.01,
+        "esl": 5e-08
+    },
+    "simulation": {
+        "time_span": [
+            0,
+            0.1
+        ],
+        "max_step": 1e-06,
+        "tolerance": 1e-09,
+        "method": "LSODA"
+    },
+    "circuit_model": {
+        "switch_resistance": 0.001,
+        "switch_inductance": 1e-08,
+        "parasitic_capacitance": 1e-11,
+        "include_skin_effect": false,
+        "include_proximity_effect": false
+    },
+    "magnetic_model": {
+        "calculation_method": "biot_savart",
+        "axial_discretization": 1000,
+        "radial_discretization": 100,
+        "include_saturation": true,
+        "include_hysteresis": false,
+        "include_eddy_currents": true,
+        "include_skin_effect": true,
+        "include_temperature_effects": false,
+        "include_displacement_current": false,
+        "force_components": {
+            "reluctance_force": true,
+            "lorentz_force": true,
+            "maxwell_stress": true,
+            "image_force": true,
+            "eddy_force": true
+        }
+    },
+    "output": {
+        "save_trajectory": true,
+        "save_current_profile": true,
+        "save_field_data": true,
+        "print_progress": true,
+        "save_interval": 100
+    },
+    "advanced_physics": {
+        "jiles_atherton": {
+            "enabled": false
+        },
+        "eddy_currents": {
+            "enabled": true,
+            "3d_modeling": false,
+            "skin_depth_calculation": true,
+            "proximity_effects": false,
+            "frequency_analysis": true,
+            "eddy_damping_factor": 1.0
+        },
+        "thermal": {
+            "enabled": false
+        },
+        "energy_conservation": {
+            "enabled": true,
+            "tolerance": 1e-06
+        }
+    },
+    "timing_optimization": {
+        "enabled": true,
+        "pre_charge": true,
+        "optimal_force_timing": true,
+        "charge_time_factor": 3.0,
+        "optimal_force_position": 0.3,
+        "turn_off_position": 0.7,
+        "velocity_prediction_method": "linear",
+        "safety_margin": 1e-06
+    }
+}

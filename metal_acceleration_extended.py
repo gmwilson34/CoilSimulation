@@ -1751,12 +1751,16 @@ def main():
                 print(f"\nAdvanced Metal GPU Physics Summary:")
                 
                 # Force analysis summary
-                if 'force_gradient' in sim.results:
+                if 'force_gradient' in sim.results and len(sim.results['force_gradient']) > 0:
                     max_gradient_force = np.max(np.abs(sim.results['force_gradient']))
-                    max_eddy_force = np.max(np.abs(sim.results.get('force_eddy', [0])))
                     print(f"  Peak gradient force: {max_gradient_force:.1f} N")
-                    if max_eddy_force > 0.1:
-                        print(f"  Peak eddy current force: {max_eddy_force:.1f} N")
+                    
+                    # Check for eddy current forces with proper validation
+                    force_eddy = sim.results.get('force_eddy', [])
+                    if len(force_eddy) > 0:
+                        max_eddy_force = np.max(np.abs(force_eddy))
+                        if max_eddy_force > 0.1:
+                            print(f"  Peak eddy current force: {max_eddy_force:.1f} N")
             
             # Extract energy values from results (EXACT same as solve.py)
             final_kinetic_energy = results.get('final_kinetic_energy_J', 0)
