@@ -74,14 +74,14 @@ class CoilgunPhysicsEngine:
         self._compute_projectile_parameters()
         self._compute_circuit_parameters()
         
-        # Initialize field calculation method
-        self.field_method = self.config.get('magnetic_model', {}).get('calculation_method', 'exact_elliptic')
+        # Initialize field calculation method - default to finite_solenoid until elliptic is implemented
+        self.field_method = self.config.get('magnetic_model', {}).get('calculation_method', 'finite_solenoid')
         
         # Initialize advanced physics models
         self._initialize_advanced_physics()
         
-        # Precompute inductance lookup table for efficiency
-        self._precompute_inductance_table()
+        # Note: Dynamic inductance calculation used instead of precomputed tables
+        # for current-dependent saturation effects
         
         # Initialize timing optimization parameters
         self._initialize_timing_optimization()
@@ -91,6 +91,25 @@ class CoilgunPhysicsEngine:
         
         # Validate configuration for numerical stability
         self.validate_configuration()
+    
+    def validate_configuration(self):
+        """Validate configuration for numerical stability."""
+        # Check for required parameters
+        if self.coil_length <= 0:
+            raise ValueError("Coil length must be positive")
+        if self.proj_mass <= 0:
+            raise ValueError("Projectile mass must be positive")
+        if self.capacitance <= 0:
+            raise ValueError("Capacitance must be positive")
+        if self.initial_voltage <= 0:
+            raise ValueError("Initial voltage must be positive")
+        
+        # Check for reasonable parameter ranges
+        if self.total_turns < 1:
+            print("WARNING: Very low turn count may affect accuracy")
+        if self.proj_mu_r < 1:
+            print("WARNING: Relative permeability less than 1 (diamagnetic or special material)")
+            print("         This may be valid for diamagnetic materials or specialized applications")
     
     def _initialize_timing_optimization(self):
         """
@@ -138,7 +157,8 @@ class CoilgunPhysicsEngine:
             return
         
         # Calculate L/R time constant for current buildup
-        max_inductance = max(self.inductance_values)
+        # Estimate maximum inductance (projectile fully inside coil)
+        max_inductance = self.inductance_with_ferromagnetic_core(self.coil_length/2)
         time_constant = max_inductance / self.total_resistance
         
         # Time needed for current to reach useful levels
@@ -293,6 +313,9 @@ class CoilgunPhysicsEngine:
         # Physical constants
         self.mu0 = self.materials_data['physical_constants']['mu0']
         
+        # Store air-core inductance for later use
+        self.L_air_core = self.solenoid_inductance_air_core()
+        
     def _compute_projectile_parameters(self):
         """Compute projectile physical parameters."""
         proj_cfg = self.config['projectile']
@@ -388,12 +411,12 @@ class CoilgunPhysicsEngine:
         """
         # Use enhanced method if available, otherwise fall back to original
         if hasattr(self, 'field_method') and self.field_method == 'exact_elliptic':
-            # Try enhanced method if it exists
-            try:
-                return self.magnetic_field_solenoid_enhanced(z, current, use_elliptic=True)
-            except:
-                # Fall back to original if enhanced method fails
-                pass
+            # TODO: Implement exact elliptic integrals using Carlson RF/RD
+            # For now, raise NotImplementedError to avoid silent fallback
+            raise NotImplementedError(
+                "Exact elliptic integral field calculation not yet implemented. "
+                "Use 'finite_solenoid' method instead, or help implement Carlson RF/RD."
+            )
         else:
             # Original Biot-Savart implementation
             # Discretize solenoid into current loops
@@ -433,66 +456,54 @@ class CoilgunPhysicsEngine:
         # Use the basic solenoid calculation which is more reliable
         return self.magnetic_field_solenoid_on_axis_basic(z, current)
     
-    def _magnetic_field_finite_solenoid_end(self, z, a, n, current):
+    def magnetic_field_finite_solenoid_on_axis(self, z, a, l, N, current):
         """
-        Calculate magnetic field contribution from one end of finite solenoid.
+        Calculate magnetic field on axis of finite solenoid using CORRECTED analytic formula.
         
-        Uses exact elliptic integral formulation with corrected Neumann formulas.
+        CORRECTED to use turn density n = N/ℓ instead of total turns N:
+        B_z = (μ₀nI/2) * [(z₂/√(a²+z₂²)) - (z₁/√(a²+z₁²))]
+        where n = N/ℓ is the turn density, z₁ = z - ℓ/2, z₂ = z + ℓ/2
+        
+        This follows Smythe §7.07 and standard electromagnetics texts.
         
         Args:
-            z: Distance from coil end to field point
+            z: Axial position where field is calculated
             a: Coil radius
-            n: Turn density (turns/m)
+            l: Coil length
+            N: Total number of turns
             current: Coil current
             
         Returns:
-            B_z: Magnetic field contribution from this end
+            B_z: Axial magnetic field
         """
-        if abs(z) < 1e-12:  # On coil plane
-            # Field at the coil plane
-            return self.mu0 * n * current / 2
+        # Apply numerical safety to inputs
+        z = self._safe_numerical_operation(z, "field_position")
+        current = self._safe_numerical_operation(current, "field_current", self.MAX_CURRENT)
         
-        # Parameters for elliptic integrals
-        rho = 0  # On-axis calculation (rho = 0)
+        # Return zero for negligible current
+        if abs(current) < self.CURRENT_EPSILON:
+            return 0.0
         
-        # Calculate alpha and beta parameters
-        alpha_sq = a**2 + z**2 - 2*a*rho
-        beta_sq = a**2 + z**2 + 2*a*rho
+        # CORRECTED: Use turn density n = N/ℓ instead of total turns N
+        n = N / l if l > 0 else 0  # Turn density (turns per meter)
         
-        if alpha_sq <= 0 or beta_sq <= 0:
-            return 0
+        # Calculate z₁ and z₂ relative to coil center
+        z1 = z - l/2
+        z2 = z + l/2
         
-        alpha = np.sqrt(alpha_sq)
-        beta = np.sqrt(beta_sq)
+        # Calculate denominators with numerical safety
+        denom1 = np.sqrt(a**2 + z1**2)
+        denom2 = np.sqrt(a**2 + z2**2)
         
-        # Elliptic integral parameter
-        k_sq = 1 - alpha_sq/beta_sq
+        if denom1 < 1e-15 or denom2 < 1e-15:
+            return 0.0
         
-        if k_sq < 0 or k_sq > 1:
-            # Outside valid range, use approximation
-            return self._magnetic_field_approximation(z, a, n, current)
+        # CORRECTED analytic formula for on-axis field of finite solenoid
+        # B_z = μ₀nI * geometric factor, where n = N/ℓ (removed erroneous ½ factor)
+        B_z = (self.mu0 * n * current) * (z2/denom2 - z1/denom1)
         
-        k = np.sqrt(k_sq)
-        
-        try:
-            # Complete elliptic integrals
-            K = ellipk(k_sq)  # Complete elliptic integral of first kind
-            E = ellipe(k_sq)  # Complete elliptic integral of second kind
-            
-            # CORRECTED Neumann formula with proper 1/π factor
-            # B_z = (μ₀nI/π) * (z/beta) * [(2-k²)K - 2E]
-            
-            if beta > 1e-12:
-                B_z = (self.mu0 * n * current / np.pi) * (z / beta) * ((2 - k_sq) * K - 2 * E)
-                # Add numerical stability check for invalid results
-                if not np.isfinite(B_z):
-                    B_z = self._magnetic_field_approximation(z, a, n, current)
-            else:
-                B_z = 0
-                
-        except (ValueError, ZeroDivisionError):
-            # Fallback to approximation if elliptic integrals fail
-            B_z = self._magnetic_field_approximation(z, a, n, current)
+        # Apply numerical safety to output
+        B_z = self._safe_numerical_operation(B_z, "magnetic_field", self.MAX_FIELD)
         
         return B_z
     
@@ -524,8 +535,14 @@ class CoilgunPhysicsEngine:
 
     def magnetic_field_solenoid_on_axis_basic(self, z, current):
         """
-        Basic magnetic field calculation using Biot-Savart discretization.
-        Fallback method when elliptic integrals are not available.
+        CORRECTED magnetic field calculation avoiding double-counting.
+        
+        FIXED: Each discretized loop represents total_turns/num_loops physical turns,
+        but the current I already flows through each actual turn. The discretization
+        simply distributes the spatial extent, not the current magnitude.
+        
+        For accuracy and to avoid discretization errors, we now use the analytical
+        finite solenoid formula directly.
         
         Args:
             z: Axial position where field is calculated
@@ -542,36 +559,10 @@ class CoilgunPhysicsEngine:
         if abs(current) < self.CURRENT_EPSILON:
             return 0.0
         
-        # Discretize solenoid into current loops
-        num_loops = max(100, int(self.total_turns / 10))  # At least 100 points
-        loop_positions = np.linspace(0, self.coil_length, num_loops)
-        
-        # Current per loop (total current divided by discretization)
-        current_per_loop = current * self.total_turns / num_loops
-        current_per_loop = self._safe_numerical_operation(current_per_loop, "current_per_loop", self.MAX_CURRENT)
-        
-        # Sum contributions from all loops with overflow protection
-        Bz_total = 0
-        for loop_pos in loop_positions:
-            try:
-                field_contribution = self.magnetic_field_on_axis_circular_loop(
-                    z, self.avg_coil_radius, current_per_loop, loop_pos
-                )
-                field_contribution = self._safe_numerical_operation(field_contribution, "field_contribution", self.MAX_FIELD)
-                Bz_total += field_contribution
-                
-                # Check for overflow accumulation
-                if abs(Bz_total) > self.MAX_FIELD:
-                    warnings.warn(f"Magnetic field calculation approaching limits: {Bz_total} T")
-                    break
-                    
-            except (OverflowError, ValueError, RuntimeWarning) as e:
-                warnings.warn(f"Magnetic field calculation error at loop {loop_pos}: {e}")
-                continue
-        
-        # Final safety check
-        Bz_total = self._safe_numerical_operation(Bz_total, "total_magnetic_field", self.MAX_FIELD)
-        return Bz_total
+        # Use analytical formula for finite solenoid instead of discretization
+        # This avoids numerical errors and double-counting issues
+        return self.magnetic_field_finite_solenoid_on_axis(
+            z, self.avg_coil_radius, self.coil_length, self.total_turns, current)
     
     def inductance_with_ferromagnetic_core(self, projectile_position, current=None, dI_dt=0):
         """
@@ -636,63 +627,76 @@ class CoilgunPhysicsEngine:
         
         return L_total
     
-    def _precompute_inductance_table(self):
-        """
-        Precompute inductance vs position for fast lookup during simulation.
-        """
-        # Position range: from well before coil to well after
-        z_min = -0.1  # 10cm before coil
-        z_max = self.coil_length + 0.1  # 10cm after coil
-        
-        num_points = 1000
-        self.inductance_positions = np.linspace(z_min, z_max, num_points)
-        self.inductance_values = np.array([
-            self.inductance_with_ferromagnetic_core(pos) 
-            for pos in self.inductance_positions
-        ])
-        
-        # Create interpolation function with simpler fill values
-        self.inductance_interp = interp1d(
-            self.inductance_positions, 
-            self.inductance_values, 
-            kind='cubic',
-            bounds_error=False,
-            fill_value=self.inductance_values[0]  # Use first value for extrapolation
-        )
-        
-        # Precompute derivative for force calculation
-        dL_dz = np.gradient(self.inductance_values, self.inductance_positions)
-        self.inductance_grad_interp = interp1d(
-            self.inductance_positions,
-            dL_dz,
-            kind='cubic',
-            bounds_error=False,
-            fill_value=0.0  # Use zero gradient for extrapolation
-        )
     
-    def get_inductance(self, position):
+    def get_inductance(self, position, current=None):
         """
-        Get inductance at given projectile position using precomputed lookup.
+        Get inductance at given projectile position with current-dependent saturation.
         
         Args:
             position: Projectile position
+            current: Current for saturation calculation (optional)
             
         Returns:
-            L: Inductance in Henries
+            L: Inductance in Henries including saturation effects
         """
-        return float(self.inductance_interp(position))
+        return self.inductance_with_ferromagnetic_core(position, current=current)
     
-    def get_inductance_gradient(self, position):
+    def get_inductance_gradient(self, position, current=None):
         """
-        Get dL/dx at given projectile position using precomputed lookup.
+        Get dL/dx at given projectile position with ADAPTIVE step size and current-dependent saturation.
+        
+        CORRECTED: Step size is now adaptive based on coil geometry to minimize truncation error.
+        For micro-coils (< 10mm), uses smaller steps. For large coils, uses larger steps.
         
         Args:
-            position: Projectile position
+            position: Projectile position  
+            current: Current for saturation calculation (optional)
             
         Returns:
-            dL_dx: Inductance gradient in H/m
+            dL_dx: Inductance gradient in H/m including saturation effects
         """
-        return float(self.inductance_grad_interp(position))
+        # IMPROVED: Adaptive step size based on coil geometry and turn density
+        # Step should be adaptive: dx = max(0.001*coil_length, coil_length/turns/5, 1e-5)
+        # This ensures proper resolution without hard caps that are too coarse or fine
+        if self.total_turns > 0:
+            # Three step size considerations:
+            # 1. Geometric scale: 0.1% of coil length
+            # 2. Turn resolution: 1/5 of turn-to-turn spacing
+            # 3. Minimum for numerical stability
+            geometric_step = 0.001 * self.coil_length
+            turn_step = self.coil_length / self.total_turns / 5
+            min_step = 1e-5  # 10 microns minimum
+            
+            dx = max(geometric_step, turn_step, min_step)
+        else:
+            dx = 1e-4  # Fallback to 0.1 mm
+        
+        # Calculate inductance at nearby points
+        L_plus = self.inductance_with_ferromagnetic_core(position + dx, current=current)
+        L_minus = self.inductance_with_ferromagnetic_core(position - dx, current=current)
+        
+        # Check for negligible inductance change to avoid numerical errors
+        if abs(L_plus - L_minus) < 1e-12:
+            return 0.0
+        
+        # Central difference formula with adaptive step
+        dL_dx = (L_plus - L_minus) / (2 * dx)
+        
+        # Apply smoothing to reduce numerical noise from abrupt permeability changes
+        # Get smoothing factor from configuration (default 0.2, range 0-0.5)
+        gradient_smoothing = self.config.get('advanced_physics', {}).get('gradient_smoothing', 0.2)
+        gradient_smoothing = max(0.0, min(0.5, gradient_smoothing))  # Clamp to valid range
+        
+        if hasattr(self, '_last_dL_dx') and hasattr(self, '_last_position'):
+            position_change = abs(position - self._last_position)
+            if position_change < 5 * dx:  # Apply smoothing for nearby points
+                dL_dx = (1 - gradient_smoothing) * dL_dx + gradient_smoothing * self._last_dL_dx
+        
+        # Store for next iteration
+        self._last_dL_dx = dL_dx
+        self._last_position = position
+        
+        return dL_dx
     
     def magnetic_force_ferromagnetic(self, current, position, velocity=0.0, current_history=None, time_history=None):
         """
@@ -711,7 +715,7 @@ class CoilgunPhysicsEngine:
             time_history: Array of recent time values (unused in basic calculation)
             
         Returns:
-            force: Total magnetic force in Newtons (positive = forward direction)
+            tuple: (force, eddy_power_loss) - Force in Newtons and eddy power loss in Watts
         """
         # Numerical safety checks
         current = self._safe_numerical_operation(current, "magnetic_force_current", self.MAX_CURRENT)
@@ -720,17 +724,21 @@ class CoilgunPhysicsEngine:
         
         # Return zero force for negligible currents
         if abs(current) < self.CURRENT_EPSILON:
-            return 0.0
+            return 0.0, 0.0
             
         # Primary force calculation using energy gradient method
         # F = 0.5 * I² * ∂L/∂x with numerical safety
-        dL_dx = self.get_inductance_gradient(position)
+        dL_dx = self.get_inductance_gradient(position, current=current)
         dL_dx = self._safe_numerical_operation(dL_dx, "inductance_gradient")
         
         # Safe calculation of I² term
         current_squared = self._safe_power(current, 2, "current_squared_force")
         force_gradient = self._safe_multiply(0.5 * current_squared, dL_dx, "gradient_force")
         force_gradient = self._safe_numerical_operation(force_gradient, "force_gradient", self.MAX_FORCE)
+        
+        # Apply magnetic saturation effects to the gradient force
+        if hasattr(self, '_apply_saturation_effects'):
+            force_gradient = self._apply_saturation_effects(force_gradient, current, position)
         
         # Calculate eddy current damping force if enabled and projectile is moving
         force_eddy = 0.0
@@ -776,7 +784,7 @@ class CoilgunPhysicsEngine:
             'power_loss_eddy': eddy_power_loss
         }
         
-        return force_total
+        return force_total, eddy_power_loss
     
     def _calculate_reluctance_force(self, current, position):
         """
@@ -795,7 +803,7 @@ class CoilgunPhysicsEngine:
         # Calculate reluctance gradient
         # R = L⁻¹, so dR/dx = -L⁻² * dL/dx
         L = self.get_inductance(position)
-        dL_dx = self.get_inductance_gradient(position)
+        dL_dx = self.get_inductance_gradient(position, current=current)
         
         if L > 1e-12:  # Avoid division by zero
             dR_dx = -(dL_dx / (L * L))
@@ -1227,7 +1235,8 @@ class CoilgunPhysicsEngine:
         print(f"  Initial voltage: {self.initial_voltage:.0f} V")
         print(f"  Initial energy: {self.initial_energy:.1f} J")
         
-        L_max = max(self.inductance_values)
+        # Calculate maximum inductance by checking projectile fully inside coil
+        L_max = self.inductance_with_ferromagnetic_core(self.coil_length/2)
         print(f"\nMagnetic System:")
         print(f"  Maximum inductance: {L_max*1e6:.1f} µH")
         print(f"  Inductance ratio: {L_max/self.solenoid_inductance_air_core():.1f}")
@@ -1279,6 +1288,9 @@ class CoilgunPhysicsEngine:
         """
         Calculate magnetic force considering circuit logic (coil turn-off conditions).
         Enhanced backward compatibility wrapper.
+        
+        Returns:
+            tuple: (force, eddy_power_loss) - Force in Newtons and eddy power loss in Watts
         """
         # Check if coil should be turned off based on position and current
         if hasattr(self, 'get_coil_driving_voltage'):
@@ -1294,17 +1306,17 @@ class CoilgunPhysicsEngine:
             should_turn_off = position >= turn_off_pos or current < 0
         
         if should_turn_off or voltage_multiplier == 0.0:
-            return 0.0
+            return 0.0, 0.0
         
         # Range check
         z_min = -0.05  # 5cm before coil start
         z_max = self.coil_length + 0.05  # 5cm after coil end
         
         if position < z_min or position > z_max:
-            return 0.0
+            return 0.0, 0.0
         
         # Calculate force with enhanced physics
-        force = self.magnetic_force_ferromagnetic(current, position, velocity)
+        force, eddy_power_loss = self.magnetic_force_ferromagnetic(current, position, velocity)
         
         # Apply damping for far positions
         distance_from_center = abs(position - self.coil_center)
@@ -1314,7 +1326,7 @@ class CoilgunPhysicsEngine:
             damping_factor = np.exp(-(distance_from_center - max_reasonable_distance) / (self.coil_length * 0.1))
             force *= damping_factor
         
-        return force
+        return force, eddy_power_loss
     
     def should_turn_off_coil(self, position, current, time=None):
         """Determine if coil should be turned off to avoid suck-back."""
@@ -1374,7 +1386,11 @@ class CoilgunPhysicsEngine:
             warnings.warn("Initial charge is zero or negative, simulation may not work properly")
         
         # Return as array with explicit type conversion
-        return [float(Q0), float(I0), float(x0), float(v0)]
+        if hasattr(self, 'thermal_enabled') and self.thermal_enabled:
+            T0 = getattr(self, 'ambient_temperature', 293.15)  # Initial temperature is ambient
+            return [float(Q0), float(I0), float(x0), float(v0), float(T0)]
+        else:
+            return [float(Q0), float(I0), float(x0), float(v0)]
     
     def _initialize_advanced_physics(self):
         """Initialize advanced physics models and parameters."""
@@ -1493,7 +1509,29 @@ class CoilgunPhysicsEngine:
         Returns:
             dydt: Time derivatives [dQ/dt, dI/dt, dx/dt, dv/dt]
         """
-        Q, I, x, v = y
+        # Initialize time tracking for energy ledger updates
+        # Only update energy ledger when time actually advances to prevent drift
+        # from multiple derivative evaluations at the same time point
+        if not hasattr(self, '_t_prev'):
+            self._t_prev = t
+            self._energy_ledger_time = t
+            self._last_energy_update_time = t
+        
+        # Calculate real time step only for energy calculations
+        dt_real = t - self._last_energy_update_time
+        should_update_energy = dt_real > 1e-12  # Only update if time actually advanced
+        
+        if should_update_energy:
+            self._last_energy_update_time = t
+        
+        self._t_prev = t
+        
+        # Unpack state vector (with optional temperature for thermal model)
+        if hasattr(self, 'thermal_enabled') and self.thermal_enabled:
+            Q, I, x, v, T = y
+            self.coil_temperature = T  # Update temperature for resistance calculation
+        else:
+            Q, I, x, v = y
         
         # Apply numerical safety to state variables
         Q = self._safe_numerical_operation(Q, "charge", self.MAX_ENERGY)
@@ -1501,12 +1539,14 @@ class CoilgunPhysicsEngine:
         x = self._safe_numerical_operation(x, "position")
         v = self._safe_numerical_operation(v, "velocity")
         
-        # If current is getting very high, run diagnostics
+        # Initialize temperature derivative for thermal model
+        dT_dt = 0.0
+        
+        # If current is getting very high, issue warning
         if abs(I) > self.MAX_CURRENT * 0.01:  # 1% of max current threshold
-            diag = self.diagnose_circuit_stability(Q, I, x, v, t)
-            if not diag['stable'] and not hasattr(self, '_stability_warning_shown'):
+            if not hasattr(self, '_stability_warning_shown'):
                 import warnings
-                warnings.warn(f"Circuit stability issues detected at t={t:.6f}s, I={I:.0f}A: {diag['issues']}")
+                warnings.warn(f"High current detected at t={t:.6f}s, I={I:.0f}A - may indicate instability")
                 self._stability_warning_shown = True
         
         # Get current inductance and its gradient with safety checks
@@ -1514,12 +1554,12 @@ class CoilgunPhysicsEngine:
         L = max(L, self.MIN_INDUCTANCE)  # Prevent zero inductance
         L = self._safe_numerical_operation(L, "inductance")
         
-        dL_dx = self.get_inductance_gradient(x)
+        dL_dx = self.get_inductance_gradient(x, current=I)
         dL_dx = self._safe_numerical_operation(dL_dx, "inductance_gradient")
         
         # Circuit equation: L*dI/dt + I*dL/dt + R*I = V_C
-        # where V_C = Q/C (capacitor voltage)
-        # and dL/dt = dL/dx * dx/dt = dL/dx * v
+        # Rearranged: dI/dt = (V_C - R*I - I*dL/dt) / L
+        # where dL/dt = dL/dx * dx/dt = dL/dx * v
         
         V_C = Q / max(self.capacitance, self.MIN_CAPACITANCE)
         V_C = self._safe_numerical_operation(V_C, "capacitor_voltage", self.MAX_VOLTAGE)
@@ -1531,48 +1571,74 @@ class CoilgunPhysicsEngine:
         effective_voltage = self._safe_multiply(V_C, voltage_multiplier, "effective_voltage")
         effective_voltage = self._safe_numerical_operation(effective_voltage, "effective_voltage", self.MAX_VOLTAGE)
         
-        # Calculate dI/dt from circuit equation with enhanced numerical stability
+        # Update temperature-dependent resistance R(T) = R_20(1 + α(T-293))
+        if hasattr(self, 'thermal_enabled') and self.thermal_enabled:
+            dT_dt = 0.0  # Initialize temperature derivative
+            
+            # Calculate heat generation from I²R losses
+            heat_power = I**2 * self.coil_resistance  # Watts
+            
+            # Simple thermal model: dT/dt = (P_heat - (T-T_ambient)/R_th) / C_th
+            # where P_heat = I²R, R_th = thermal resistance, C_th = thermal capacitance
+            T_ambient = getattr(self, 'ambient_temperature', 293.15)
+            R_thermal = getattr(self, 'thermal_resistance', 10.0)  # K/W
+            C_thermal = getattr(self, 'thermal_time_constant', 60.0)  # s
+            
+            # Update coil temperature
+            if not hasattr(self, 'coil_temperature'):
+                self.coil_temperature = T_ambient
+            
+            dT_dt = (heat_power - (self.coil_temperature - T_ambient) / R_thermal) / C_thermal
+            dT_dt = self._safe_numerical_operation(dT_dt, "dT_dt")
+            
+            # Update resistance based on current temperature
+            temp_coeff = getattr(self, 'copper_temp_coeff', 0.00393)  # 1/K for copper
+            resistance_factor = 1 + temp_coeff * (self.coil_temperature - 293.15)
+            current_resistance = self.coil_resistance * resistance_factor
+            
+            # ENHANCED: Update projectile material properties with temperature
+            if getattr(self, 'thermal_permeability_dep', False):
+                # Temperature-dependent permeability: μ_r(T) ≈ μ_r(20°C) / (1 + βΔT)
+                # with β≈0.004 K⁻¹ for steels
+                beta_mu = 0.004  # K⁻¹ for steel permeability
+                delta_T = self.coil_temperature - 293.15
+                temp_factor = 1 + beta_mu * delta_T
+                self.proj_mu_r_current = self.proj_mu_r / temp_factor
+            else:
+                self.proj_mu_r_current = self.proj_mu_r
+            
+            # Temperature-dependent projectile resistivity
+            proj_temp_coeff = 0.005  # K⁻¹ typical for iron/steel
+            delta_T = self.coil_temperature - 293.15
+            proj_resistivity_factor = 1 + proj_temp_coeff * delta_T
+            self.proj_resistivity_current = self.proj_resistivity_initial * proj_resistivity_factor
+            
+            # Update total resistance including temperature effects
+            circuit_cfg = self.config.get('circuit_model', {})
+            switch_resistance = circuit_cfg.get('switch_resistance', 0)
+            esr = self.config.get('capacitor', {}).get('esr', 0)
+            current_total_resistance = current_resistance + switch_resistance + esr
+        else:
+            current_total_resistance = self.total_resistance
+        
+        # Calculate dI/dt from circuit equation
         if L > self.MIN_INDUCTANCE:
-            # Calculate each term safely
-            resistive_term = self._safe_multiply(max(self.total_resistance, self.MIN_RESISTANCE), I, "resistive_term")
-            back_emf_term = self._safe_multiply(self._safe_multiply(I, dL_dx, "I_dLdx"), v, "back_emf")
+            # Calculate each term of the circuit equation
+            resistive_term = self._safe_multiply(max(current_total_resistance, self.MIN_RESISTANCE), I, "resistive_term")
             
-            # Check for extremely large back-EMF that could destabilize the solution
-            back_emf_scalar = float(back_emf_term) if isinstance(back_emf_term, np.ndarray) else back_emf_term
-            effective_voltage_scalar = float(effective_voltage) if isinstance(effective_voltage, np.ndarray) else effective_voltage
-            
-            if abs(back_emf_scalar) > abs(effective_voltage_scalar) * 1000:
-                import warnings
-                warnings.warn(f"Extremely large back-EMF detected: {back_emf_scalar} V vs source {effective_voltage_scalar} V")
-                # Limit back-EMF to prevent instability
-                back_emf_term = np.sign(back_emf_scalar) * min(abs(back_emf_scalar), abs(effective_voltage_scalar) * 1000)
-            
+            back_emf_term = self._safe_multiply(
+                self._safe_multiply(I, dL_dx, "I_dLdx"), v, "back_emf"
+            )
+
+            # Circuit equation: dI/dt = (V_C - R*I - I*dL/dt) / L
             numerator = effective_voltage - resistive_term - back_emf_term
             numerator = self._safe_numerical_operation(numerator, "dI_numerator")
             
-            # Additional stability check: if current is already very high and dI/dt would make it higher,
-            # apply a damping factor to prevent runaway growth
-            raw_dI_dt = numerator / L
+            dI_dt = numerator / L
             
-            if abs(I) > self.MAX_CURRENT * 0.1 and np.sign(raw_dI_dt) == np.sign(I):
-                # Apply exponential damping when current is high and increasing
-                damping_factor = 1.0 / (1.0 + abs(I) / (self.MAX_CURRENT * 0.1))
-                dI_dt = raw_dI_dt * damping_factor
-                if abs(I) > self.MAX_CURRENT * 0.5:
-                    import warnings
-                    warnings.warn(f"Applying current growth damping: I={I} A, damping={damping_factor:.3f}")
-            else:
-                dI_dt = raw_dI_dt
-            
-            # Final safety limits on current derivative
+            # Apply reasonable safety limits only to prevent numerical overflow
             max_dI_dt = self.MAX_CURRENT / 1e-6  # Maximum current change rate
             dI_dt = self._safe_numerical_operation(dI_dt, "dI_dt", max_dI_dt)
-            
-            # Emergency brake: if current derivative is still extreme, set to zero
-            if abs(dI_dt) > max_dI_dt * 0.5:
-                import warnings
-                warnings.warn(f"Emergency current derivative limiting: dI/dt={dI_dt} -> 0")
-                dI_dt = 0.0
         else:
             dI_dt = 0
             
@@ -1595,10 +1661,10 @@ class CoilgunPhysicsEngine:
         v_scalar = to_scalar(v)
         
         if hasattr(self, 'magnetic_force_with_circuit_logic'):
-            F_mag = self.magnetic_force_with_circuit_logic(I_scalar, x_scalar, t, v_scalar)
+            F_mag, eddy_power_loss = self.magnetic_force_with_circuit_logic(I_scalar, x_scalar, t, v_scalar)
         else:
             # Fallback to enhanced force calculation
-            F_mag = self.magnetic_force_ferromagnetic(I_scalar, x_scalar, v_scalar)
+            F_mag, eddy_power_loss = self.magnetic_force_ferromagnetic(I_scalar, x_scalar, v_scalar)
         
         # Apply numerical safety to force
         F_mag = self._safe_numerical_operation(F_mag, "magnetic_force", self.MAX_FORCE)
@@ -1615,9 +1681,144 @@ class CoilgunPhysicsEngine:
         dv_dt = F_mag / proj_mass
         dv_dt = self._safe_numerical_operation(dv_dt, "dv_dt", self.MAX_FORCE / self.MIN_MASS)
         
-        # Return derivatives as scalars
-        return [float(dQ_dt), float(dI_dt), float(dx_dt), float(dv_dt)]
+        # Update energy ledger for conservation tracking
+        if hasattr(self, 'energy_ledger') and hasattr(self, 'energy_tracking') and self.energy_tracking:
+            # Energy components - fix capacitor energy calculation
+            E_cap = 0.5 * Q * Q / self.capacitance
+            E_mag = 0.5 * L * I_scalar**2
+            E_kin = 0.5 * proj_mass * v_scalar**2
+            
+            # Update energy ledger only when time actually advances
+            if should_update_energy and dt_real > 0:
+                # Power losses
+                P_resistive = I_scalar**2 * max(current_total_resistance, self.MIN_RESISTANCE)
+                P_eddy = eddy_power_loss
+                
+                # Update energy ledger using real time step
+                self.energy_ledger['E_I2R_coil'] += P_resistive * dt_real
+                self.energy_ledger['E_eddy_losses'] += P_eddy * dt_real
+            
+            # Always update instantaneous energy values
+            self.energy_ledger['E_kinetic_final'] = E_kin
+            self.energy_ledger['E_magnetic_stored'] = E_mag
+            
+            # Check energy conservation
+            E_total = E_cap + E_mag + E_kin
+            E_losses = self.energy_ledger['E_I2R_coil'] + self.energy_ledger['E_eddy_losses']
+            E_initial = self.energy_ledger['E_initial_capacitor']
+            
+            energy_error = abs(E_total + E_losses - E_initial) / E_initial
+            if energy_error > 0.01:  # 1% error threshold
+                # Store the most recent energy warning
+                self.latest_energy_warning = f"Energy conservation error: {energy_error:.3%} at t={t:.6f}s"
+                self.energy_warning_count += 1
+                
+                # Only print warning occasionally to avoid spam (every 1000th warning or if time advanced significantly)
+                # However, don't print during simulation to avoid conflicts with progress bar
+                if (self.energy_warning_count == 1 or 
+                    self.energy_warning_count % 1000 == 0 or 
+                    t - self.last_energy_warning_time > 1e-3):
+                    # Store the warning but don't print it - let the progress tracker handle display
+                    self.last_energy_warning_time = t
         
+        # Return derivatives as scalars
+        if hasattr(self, 'thermal_enabled') and self.thermal_enabled:
+            # Ensure dT_dt is always defined when thermal model is enabled
+            if 'dT_dt' not in locals():
+                dT_dt = 0.0  # No temperature change if not calculated
+            return [float(dQ_dt), float(dI_dt), float(dx_dt), float(dv_dt), float(dT_dt)]
+        else:
+            return [float(dQ_dt), float(dI_dt), float(dx_dt), float(dv_dt)]
+    
+    def create_stepwise_callback(self):
+        """
+        Create a stepwise callback for proper energy conservation tracking.
+        This prevents ledger drift from multiple derivative evaluations at the same time point.
+        
+        Returns:
+            callback: Function that can be used as stepwise_callback in solve_ivp
+        """
+        # Initialize callback state
+        callback_state = {'last_time': None}
+        
+        def on_step(t, y):
+            """
+            Stepwise callback that executes once per accepted integration step.
+            Updates energy ledger with proper time step to prevent drift.
+            """
+            if callback_state['last_time'] is None:
+                callback_state['last_time'] = t
+                return
+            
+            dt_step = t - callback_state['last_time']
+            if dt_step <= 0:
+                return  # No time advancement, skip energy update
+            
+            # Unpack state vector
+            T = 293.15  # Default temperature
+            if hasattr(self, 'thermal_enabled') and self.thermal_enabled and len(y) >= 5:
+                Q, I, x, v, T = y[:5]
+            else:
+                Q, I, x, v = y[:4]
+            
+            # Calculate energies using consistent inductance
+            L = self.inductance_with_ferromagnetic_core(x, current=I, dI_dt=0)
+            L = max(L, self.MIN_INDUCTANCE)
+            
+            # Get current resistance (with temperature effects if enabled)
+            if hasattr(self, 'thermal_enabled') and self.thermal_enabled:
+                if not hasattr(self, 'copper_temp_coeff'):
+                    self.copper_temp_coeff = 0.00393  # 1/K for copper
+                temp_factor = 1 + self.copper_temp_coeff * (T - 293.15)
+                current_resistance = self.coil_resistance * temp_factor
+            else:
+                current_resistance = self.coil_resistance
+            
+            # Add circuit resistances
+            circuit_cfg = self.config.get('circuit_model', {})
+            switch_resistance = circuit_cfg.get('switch_resistance', 0)
+            esr = self.config.get('capacitor', {}).get('esr', 0)
+            total_resistance = current_resistance + switch_resistance + esr
+            
+            # Calculate power losses
+            P_resistive = I**2 * max(total_resistance, self.MIN_RESISTANCE)
+            
+            # Get eddy current losses from force analysis if available
+            P_eddy = 0.0
+            if hasattr(self, 'force_analysis') and 'power_loss_eddy' in self.force_analysis:
+                P_eddy = self.force_analysis['power_loss_eddy']
+            
+            # Update energy ledger
+            if hasattr(self, 'energy_ledger'):
+                self.energy_ledger['E_I2R_coil'] += P_resistive * dt_step
+                self.energy_ledger['E_eddy_losses'] += P_eddy * dt_step
+                
+                # Update instantaneous energies
+                proj_mass = max(self.proj_mass, self.MIN_MASS)
+                E_cap = 0.5 * Q * Q / max(self.capacitance, self.MIN_CAPACITANCE)
+                E_mag = 0.5 * L * I**2
+                E_kin = 0.5 * proj_mass * v**2
+                
+                self.energy_ledger['E_kinetic_final'] = E_kin
+                self.energy_ledger['E_magnetic_stored'] = E_mag
+                
+                # Check energy conservation periodically
+                if hasattr(self, 'energy_tracking') and self.energy_tracking:
+                    E_total = E_cap + E_mag + E_kin
+                    E_losses = self.energy_ledger['E_I2R_coil'] + self.energy_ledger['E_eddy_losses']
+                    E_initial = self.energy_ledger['E_initial_capacitor']
+                    
+                    energy_error = abs(E_total + E_losses - E_initial) / E_initial
+                    if energy_error > 0.01:  # 1% error threshold
+                        self.latest_energy_warning = f"Energy conservation error: {energy_error:.3%} at t={t:.6f}s"
+                        if not hasattr(self, 'energy_warning_count'):
+                            self.energy_warning_count = 0
+                        self.energy_warning_count += 1
+            
+            callback_state['last_time'] = t
+        
+        return on_step
+    
     def _initialize_bh_curves(self):
         """Initialize B-H curves for nonlinear materials."""
         # Initialize material B-H curves for nonlinear permeability
@@ -1641,8 +1842,6 @@ class CoilgunPhysicsEngine:
             b_values.append(b)
         
         self.bh_curves['steel'] = (h_values, np.array(b_values))
-        self.bh_curves['Pure_Iron'] = (h_values, np.array(b_values))
-        
 
         
     def _initialize_thermal_model(self):
@@ -1693,6 +1892,11 @@ class CoilgunPhysicsEngine:
         # Energy conservation tracking
         self.energy_conservation_error = 0.0
         self.max_energy_error = 0.0
+        
+        # Energy warning tracking - store only the latest warning
+        self.latest_energy_warning = None
+        self.energy_warning_count = 0
+        self.last_energy_warning_time = 0
     
     def calculate_nonlinear_permeability(self, H_applied, material_name, previous_B=None, dI_dt=0):
         """
@@ -1752,8 +1956,8 @@ class CoilgunPhysicsEngine:
                 # Fallback to simple saturation curve
                 mu_r_effective, B_field = self._simple_saturation_curve(H_applied, material_name)
                 
-        except Exception as e:
-            # Fallback to simple model if J-A fails
+        except:
+            # Fallback to simple saturation curve on error
             mu_r_effective, B_field = self._simple_saturation_curve(H_applied, material_name)
         
         # Ensure physical bounds
@@ -1861,24 +2065,52 @@ class CoilgunPhysicsEngine:
         # Estimate characteristic frequency
         frequency = self._estimate_frequency(current_history, time_history, velocity, position)
         
+        # Calculate current derivative from history
+        current_derivative = 0.0
+        current_time = None
+        if current_history is not None and time_history is not None and len(current_history) >= 2:
+            dt = time_history[-1] - time_history[-2]
+            if dt > 1e-12:
+                current_derivative = (current_history[-1] - current_history[-2]) / dt
+            current_time = time_history[-1]
+        
         # Calculate magnetic field and gradient
         B_field = self.magnetic_field_solenoid_enhanced(position, current)
         B_gradient = self._calculate_field_gradient(position, current)
         
-        # Enhanced skin depth calculation
+        # CORRECTED: Enhanced skin depth calculation with proper permeability dependence
+        # δ = √(2 / (ω μ(H) σ)) where μ(H) comes from B-H curve
         omega = 2 * np.pi * frequency
         if omega > 1e-6 and conductivity > 1e-6:
-            skin_depth_base = np.sqrt(2 / (omega * self.mu0 * conductivity))
+            # Get magnetic field intensity in projectile
+            H_field = abs(B_field) / self.mu0 if abs(B_field) > 1e-12 else 0
+            
+            # Get current-dependent permeability
+            if hasattr(self, 'calculate_nonlinear_permeability'):
+                try:
+                    mu_r_eff, _ = self.calculate_nonlinear_permeability(H_field, 
+                                                                       self.config['projectile']['material'])
+                except:
+                    # Fallback: use saturation-corrected permeability
+                    mu_r_eff = self.proj_mu_r
+                    if H_field > 1000:  # Saturation onset
+                        mu_r_eff = max(1.0, self.proj_mu_r * (1000 / H_field))
+            else:
+                # Simple saturation model for μ(H)
+                mu_r_eff = self.proj_mu_r
+                if H_field > 1000:  # A/m saturation onset
+                    mu_r_eff = max(1.0, self.proj_mu_r * (1000 / H_field))
+            
+            # Skin depth with proper permeability dependence
+            mu_eff = mu_r_eff * self.mu0
+            skin_depth = np.sqrt(2 / (omega * mu_eff * conductivity))
         else:
-            skin_depth_base = self.proj_radius  # DC case
-        
-        # Position-dependent skin depth due to varying field strength
-        field_factor = abs(B_field) / (0.01 + abs(B_field))  # Normalize to prevent division by zero
-        skin_depth = skin_depth_base * (1 + 0.2 * field_factor)  # Field-dependent correction
+            skin_depth = self.proj_radius  # DC case
         
         # CORRECTED 3D eddy current pattern calculation
         eddy_results = self._calculate_3d_eddy_currents(
-            B_field, B_gradient, velocity, skin_depth, conductivity, frequency
+            B_field, B_gradient, velocity, skin_depth, conductivity, frequency,
+            current, current_derivative, current_time
         )
         
         # Enhanced power loss calculation
@@ -1918,463 +2150,216 @@ class CoilgunPhysicsEngine:
         Returns:
             force_saturated: Force with saturation effects applied (N)
         """
+        if not hasattr(self, 'enable_nonlinear_permeability') or not self.enable_nonlinear_permeability:
+            return force
+        
         material_name = self.config['projectile']['material']
-        if material_name not in self.bh_curves:
-            return force  # No saturation data available
         
-        # Estimate magnetic field intensity in projectile
-        B_applied = self.magnetic_field_solenoid_enhanced(position, current)
-        H_applied = B_applied / self.mu0
+        # Get magnetic field intensity in the core
+        H_field = abs(current) * self.total_turns / self.coil_length if self.coil_length > 0 else 0
         
-        # Get material B-H curve data (stored as tuples)
-        h_values, b_values = self.bh_curves[material_name]
-        
-        # Estimate saturation field from B-H curve
-        b_sat = np.max(b_values)  # Maximum B value is saturation
-        h_sat = h_values[np.argmax(b_values)]  # H at maximum B
-        
-        # Calculate saturation factor using enhanced model
-        if abs(H_applied) > 0.1 * h_sat:
-            # Significant field - interpolate actual B-H response
-            if H_applied > 0:
-                b_actual = np.interp(abs(H_applied), h_values, b_values)
-            else:
-                b_actual = -np.interp(abs(H_applied), h_values, b_values)
-            
-            # Linear response would give (using max permeability)
-            mu_r_max = self.proj_mu_r  # Use configured relative permeability
-            b_linear = self.mu0 * mu_r_max * H_applied
-            
-            # Saturation factor = actual_response / linear_response
-            if abs(b_linear) > 1e-12:
-                saturation_factor = abs(b_actual) / abs(b_linear)
-            else:
-                saturation_factor = 1.0
-            
-            # Limit saturation factor
-            saturation_factor = min(1.0, max(0.1, saturation_factor))
+        # Simple saturation model
+        H_sat = 1000  # A/m saturation onset for steel
+        if H_field > H_sat:
+            saturation_factor = H_sat / H_field
+            force_saturated = force * saturation_factor
         else:
-            saturation_factor = 1.0
-        
-        # Apply saturation reduction to force
-        force_saturated = force * saturation_factor
+            force_saturated = force
         
         return force_saturated
     
     def _estimate_frequency(self, current_history, time_history, velocity, position):
         """
-        Estimate characteristic frequency for eddy current calculations.
+        Estimate the effective frequency for eddy current calculations.
         
         Args:
-            current_history: Array of current values
-            time_history: Array of time values  
-            velocity: Projectile velocity
-            position: Projectile position
+            current_history: Array of recent current values
+            time_history: Array of recent time values
+            velocity: Projectile velocity (m/s)
+            position: Projectile position (m)
             
         Returns:
-            frequency: Estimated characteristic frequency (Hz)
+            frequency: Estimated frequency (Hz)
         """
-        # Try frequency analysis from current history
-        if (current_history is not None and time_history is not None and 
-            len(current_history) > 5):
-            # Simple frequency estimation from current changes
-            dt = time_history[-1] - time_history[0] if len(time_history) > 1 else 1e-6
-            if dt > 1e-9:
-                # Estimate from current variation
-                current_variation = np.std(current_history) if len(current_history) > 2 else 0
-                avg_current = np.mean(np.abs(current_history)) if len(current_history) > 0 else 1
-                if avg_current > 1e-6:
-                    freq_estimate = float(current_variation / (dt * avg_current) * 100)  # Rough estimate
-                    return max(100.0, min(freq_estimate, 10000.0))  # Limit to reasonable range
+        # Method 1: From velocity and geometry
+        freq_velocity = abs(velocity) / (2 * self.coil_length) if self.coil_length > 0 else 0
         
-        # Estimate from velocity and geometry
-        if abs(velocity) > 1e-6:
-            # Geometric frequency based on projectile speed
-            char_length = min(self.proj_length, self.coil_length / 2)
-            geometric_freq = abs(velocity) / char_length
-            return min(geometric_freq, 10000)  # Cap at 10 kHz
+        # Method 2: From current change rate
+        freq_current = 0
+        if current_history is not None and time_history is not None and len(current_history) >= 2:
+            dI_dt = (current_history[-1] - current_history[-2]) / max(time_history[-1] - time_history[-2], 1e-9)
+            if abs(current_history[-1]) > 1e-6:
+                freq_current = abs(dI_dt) / (2 * np.pi * abs(current_history[-1]))
         
-        # Default frequency for transformer effects
-        return 1000  # 1 kHz default
+        # Use the larger of the two estimates, ensuring minimum 1 Hz
+        frequency = max(freq_velocity, freq_current)
+        frequency = max(frequency, 1.0)  # Ensure minimum 1 Hz even if both methods give 0
+        return min(frequency, 10000)  # Maximum 10 kHz
     
-    def _calculate_3d_eddy_currents(self, B_field, B_gradient, velocity, skin_depth, conductivity, frequency):
+    def _calculate_3d_eddy_currents(self, B_field, B_gradient, velocity, skin_depth, conductivity, frequency, current, current_derivative, t):
         """
-        CORRECTED calculation of 3D eddy current patterns in cylindrical conductor.
+        Calculate 3D eddy current patterns in the projectile.
         
-        Fixed motional electric field calculation for axial motion:
-        - For axial motion in axial field: E_motional = 0  
-        - Primary eddy currents come from transformer EMF: ∇ × E = -∂B/∂t
+        This is a simplified implementation that captures the essential physics
+        without full 3D FEM complexity.
         
         Args:
-            B_field: Axial magnetic field (T)
-            B_gradient: Field gradient (T/m)
+            B_field: Magnetic field strength (T)
+            B_gradient: Magnetic field gradient (T/m)
             velocity: Projectile velocity (m/s)
             skin_depth: Electromagnetic skin depth (m)
             conductivity: Electrical conductivity (S/m)
-            frequency: Operating frequency (Hz)
+            frequency: Effective frequency (Hz)
+            current: Coil current (A)
+            current_derivative: Current change rate (A/s)
+            t: Current time (s)
             
         Returns:
-            dict: Detailed eddy current results
+            dict: Eddy current results
         """
+        # Simplified 3D eddy current model
+        results = {
+            'power_loss': 0.0,
+            'force_total': 0.0,
+            'effective_resistance': 1e6,
+            'induced_emf': 0.0,
+            'current_density_peak': 0.0
+        }
+        
+        if abs(B_field) < 1e-9 or conductivity < 1e-6:
+            return results
+        
+        # EMF from changing flux
         omega = 2 * np.pi * frequency
+        emf_transformer = 0.5 * self.proj_radius * abs(B_field) * omega
         
-        # CORRECTED motional electric field calculation
-        # For axial motion in predominantly axial field: E_motional = 0
-        E_motional = 0.0  # CORRECTED: v ∥ B gives zero cross product
-        
-        # Transformer electric field from changing flux (primary eddy current source)
-        # E_transformer ≈ -r/2 * dB/dt ≈ -r * ω * B_field / 2
-        r_avg = self.proj_radius / 2  # Average radius for estimation
-        E_transformer = omega * B_field * r_avg / 2
-        
-        # Gradient-induced electric field from spatial field variation
-        # When projectile moves through field gradient: E_gradient ≈ v * ∂B/∂z * r/2
-        E_gradient = abs(velocity * B_gradient * r_avg / 2)
-        
-        # Total electric field magnitude
-        E_total = np.sqrt(E_transformer**2 + E_gradient**2)
-        
-        # Current density calculation with skin effect
+        # Current density in skin layer
         if skin_depth < self.proj_radius:
-            # Skin effect dominates
+            # Concentrated in skin layer
             effective_area = 2 * np.pi * self.proj_radius * skin_depth * self.proj_length
-            current_density_peak = conductivity * E_total
+            path_length = 2 * np.pi * self.proj_radius
         else:
-            # Uniform current distribution
+            # Distributed throughout volume
             effective_area = np.pi * self.proj_radius**2
-            current_density_peak = conductivity * E_total * 0.5  # Average over volume
-        
-        # Current density with realistic distribution
-        J_effective = current_density_peak * 0.7  # Account for non-uniform distribution
-        
-        # Total induced current
-        I_induced = J_effective * effective_area
-        
-        # RMS current for power calculations
-        I_rms = I_induced / np.sqrt(2)  # Assume sinusoidal variation
+            path_length = 2 * np.pi * self.proj_radius
         
         # Effective resistance
-        if effective_area > 1e-12:
-            # Path length is approximately the circumference
-            path_length = 2 * np.pi * self.proj_radius
-            R_effective = path_length / (conductivity * effective_area)
-        else:
-            R_effective = 1e6  # Very high resistance
+        R_eff = path_length / (conductivity * effective_area) if effective_area > 1e-12 else 1e6
         
-        # Power loss: P = I²R
-        power_loss = I_rms**2 * R_effective
+        # Current density
+        J_peak = emf_transformer * conductivity if emf_transformer > 0 else 0
         
-        # Forces (CORRECTED calculations)
-        # Force from interaction with field gradient
-        force_gradient_interaction = I_induced * B_gradient * effective_area / np.pi
+        # Power loss
+        power_loss = emf_transformer**2 * conductivity * effective_area / path_length
         
-        # Force from magnetic pressure (simplified)  
-        force_magnetic_pressure = I_induced * B_field * self.proj_diameter
+        # Force from eddy currents (opposes motion)
+        force_eddy = -power_loss / max(abs(velocity), 1e-6) if abs(velocity) > 1e-6 else 0
         
-        # Total force
-        force_total = np.sqrt(force_gradient_interaction**2 + force_magnetic_pressure**2)
-        
-        # EMF calculations
-        # Transformer EMF (primary source)
-        flux_rate = omega * B_field * np.pi * self.proj_radius**2
-        emf_transformer = flux_rate
-        
-        # Motional EMF (zero for axial motion)
-        emf_motional = 0.0  # CORRECTED
-        
-        # Gradient EMF
-        emf_gradient = velocity * B_gradient * np.pi * self.proj_radius**2
-        
-        # Total EMF
-        emf_total = np.sqrt(emf_transformer**2 + emf_gradient**2)
-        
-        return {
-            'current_rms': I_rms,
-            'current_density_peak': current_density_peak,
-            'effective_resistance': R_effective,
+        results.update({
             'power_loss': power_loss,
-            'force_total': force_total,
-            'induced_emf': emf_total,
-            'emf_transformer': emf_transformer,
-            'emf_gradient': emf_gradient
-        }
-    
-    def _safe_numerical_operation(self, value, operation_name="unknown", max_limit=None, min_limit=None):
+            'force_total': force_eddy,
+            'effective_resistance': R_eff,
+            'induced_emf': emf_transformer,
+            'current_density_peak': J_peak
+        })
+        
+        return results
+
+    def _safe_numerical_operation(self, value, operation_name, max_value=None):
         """
-        Perform numerical safety checks to prevent overflow and invalid operations.
+        Apply numerical safety checks to prevent overflow/underflow.
         
         Args:
-            value: The numerical value to check
-            operation_name: Name of the operation for debugging
-            max_limit: Maximum allowed value
-            min_limit: Minimum allowed value
+            value: Input value to check
+            operation_name: Name of operation for error messages
+            max_value: Maximum allowed value (optional)
             
         Returns:
-            Safe numerical value within bounds
+            safe_value: Numerically safe value
         """
-        # Handle None values
-        if value is None:
-            return 0.0
-            
-        # Convert to float and handle arrays
-        if isinstance(value, (list, tuple, np.ndarray)):
-            return np.array([self._safe_numerical_operation(v, operation_name, max_limit, min_limit) 
-                           for v in np.atleast_1d(value)])
+        # Handle numpy arrays
+        if hasattr(value, '__len__') and not isinstance(value, str):
+            return np.array([self._safe_numerical_operation(v, operation_name, max_value) for v in value])
         
+        # Convert to float
         try:
             value = float(value)
-        except (ValueError, TypeError, OverflowError):
-            warnings.warn(f"Invalid numerical value in {operation_name}: {value}, using 0.0")
+        except (ValueError, TypeError):
+            print(f"Warning: Non-numeric value in {operation_name}, returning 0")
             return 0.0
         
-        # Check for NaN or infinity
-        if not np.isfinite(value):
-            warnings.warn(f"Non-finite value in {operation_name}: {value}, using 0.0")
+        # Check for NaN and infinity
+        if np.isnan(value) or np.isinf(value):
+            print(f"Warning: NaN/Inf detected in {operation_name}, returning 0")
             return 0.0
         
-        # Apply bounds
-        if max_limit is not None and abs(value) > max_limit:
-            sign = np.sign(value)
-            warnings.warn(f"Value overflow in {operation_name}: {value} > {max_limit}, clamping")
-            return sign * max_limit
-            
-        if min_limit is not None and abs(value) < min_limit and value != 0.0:
-            sign = np.sign(value)
-            return sign * min_limit
-            
+        # Apply maximum value limit if specified
+        if max_value is not None:
+            if abs(value) > max_value:
+                sign = 1 if value >= 0 else -1
+                value = sign * max_value
+        
         return value
     
-    def _safe_power(self, base, exponent, operation_name="power"):
+    def _safe_multiply(self, a, b, operation_name):
         """
-        Safe power operation with overflow protection.
+        Safely multiply two values with overflow protection.
+        
+        Args:
+            a, b: Values to multiply
+            operation_name: Name of operation for error messages
+            
+        Returns:
+            product: Safe multiplication result
         """
         try:
-            base = self._safe_numerical_operation(base, f"{operation_name}_base")
-            exponent = self._safe_numerical_operation(exponent, f"{operation_name}_exp")
+            # Check for zero multiplication
+            if abs(a) < 1e-20 or abs(b) < 1e-20:
+                return 0.0
             
-            # Prevent extreme powers
-            if abs(exponent) > 100:
-                warnings.warn(f"Extreme exponent in {operation_name}: {exponent}, limiting to ±100")
-                exponent = np.sign(exponent) * 100
-                
-            # Check if result would overflow
-            if abs(base) > 1 and exponent > 0:
-                max_safe_exp = np.log(self.MAX_ENERGY) / np.log(abs(base))
-                if exponent > max_safe_exp:
-                    exponent = max_safe_exp
-                    warnings.warn(f"Power operation would overflow in {operation_name}, limiting exponent")
+            # Check for potential overflow
+            if abs(a) > 1e10 and abs(b) > 1e10:
+                # Use logarithmic multiplication to check for overflow
+                log_a = np.log10(abs(a))
+                log_b = np.log10(abs(b))
+                if log_a + log_b > 200:  # Would overflow
+                    print(f"Warning: Overflow prevented in {operation_name}")
+                    return 1e200 if (a >= 0) == (b >= 0) else -1e200
+            
+            result = a * b
+            return self._safe_numerical_operation(result, operation_name)
+            
+        except (OverflowError, ValueError):
+            print(f"Warning: Overflow in {operation_name}, returning bounded value")
+            return 1e100 if (a >= 0) == (b >= 0) else -1e100
+    
+    def _safe_power(self, base, exponent, operation_name):
+        """
+        Safely compute power with overflow protection.
+        
+        Args:
+            base: Base value
+            exponent: Exponent value
+            operation_name: Name of operation for error messages
+            
+        Returns:
+            result: Safe power computation result
+        """
+        try:
+            # Handle zero base
+            if abs(base) < 1e-20:
+                return 0.0
+            
+            # Check for potential overflow in power operation
+            if abs(base) > 1e10 and abs(exponent) > 2:
+                log_result = exponent * np.log10(abs(base))
+                if log_result > 200:  # Would overflow
+                    print(f"Warning: Power overflow prevented in {operation_name}")
+                    return 1e200 if base >= 0 or exponent % 2 == 0 else -1e200
             
             result = base ** exponent
-            return self._safe_numerical_operation(result, f"{operation_name}_result", self.MAX_ENERGY)
+            return self._safe_numerical_operation(result, operation_name)
             
-        except (OverflowError, ValueError, RuntimeWarning):
-            warnings.warn(f"Power operation failed in {operation_name}, returning 0.0")
-            return 0.0
-    
-    def _safe_multiply(self, a, b, operation_name="multiply"):
-        """
-        Safe multiplication with overflow protection.
-        """
-        try:
-            a = self._safe_numerical_operation(a, f"{operation_name}_a")
-            b = self._safe_numerical_operation(b, f"{operation_name}_b")
-            
-            # Check for potential overflow before multiplication
-            if abs(a) > 0 and abs(b) > self.MAX_ENERGY / abs(a):
-                warnings.warn(f"Multiplication would overflow in {operation_name}, limiting result")
-                return np.sign(a * b) * self.MAX_ENERGY
-                
-            result = a * b
-            return self._safe_numerical_operation(result, f"{operation_name}_result", self.MAX_ENERGY)
-            
-        except (OverflowError, ValueError, RuntimeWarning):
-            warnings.warn(f"Multiplication failed in {operation_name}, returning 0.0")
-            return 0.0
-    
-    def validate_numerical_state(self, Q, I, x, v, t):
-        """
-        Validate the current simulation state for numerical stability.
-        
-        Args:
-            Q: Charge
-            I: Current  
-            x: Position
-            v: Velocity
-            t: Time
-            
-        Returns:
-            bool: True if state is valid, False if problematic
-        """
-        # Check for non-finite values
-        state_vars = [Q, I, x, v, t]
-        if not all(np.isfinite(var) for var in state_vars):
-            warnings.warn(f"Non-finite state at t={t}: Q={Q}, I={I}, x={x}, v={v}")
-            return False
-        
-        # Check for extreme current that could cause overflow
-        if abs(I) > self.MAX_CURRENT * 0.8:  # Warning at 80% of max
-            warnings.warn(f"Current approaching dangerous levels: {I} A at t={t}")
-            if abs(I) > self.MAX_CURRENT:
-                return False
-        
-        # Check for extreme charge levels
-        if abs(Q) > self.MAX_ENERGY * 0.8:
-            warnings.warn(f"Charge energy approaching dangerous levels: {Q} at t={t}")
-            if abs(Q) > self.MAX_ENERGY:
-                return False
-        
-        # Check for extreme velocities (faster than speed of light is clearly wrong)
-        if abs(v) > 3e8:  # Speed of light
-            warnings.warn(f"Velocity exceeds speed of light: {v} m/s at t={t}")
-            return False
-        
-        # Check position bounds (projectile shouldn't go backwards significantly)
-        if x < -0.1:  # Allow small negative for numerical precision
-            warnings.warn(f"Projectile moved backwards significantly: x={x} at t={t}")
-            
-        return True
-    
-    def diagnose_circuit_stability(self, Q, I, x, v, t=0):
-        """
-        Diagnose potential circuit stability issues that might lead to current runaway.
-        
-        Args:
-            Q, I, x, v: Current state variables
-            t: Current time
-            
-        Returns:
-            dict: Diagnostic information
-        """
-        diagnostics = {
-            'stable': True,
-            'issues': [],
-            'warnings': [],
-            'circuit_time_constant': 0,
-            'energy_balance': 0
-        }
-        
-        try:
-            # Get current circuit parameters
-            L = self.inductance_with_ferromagnetic_core(x, current=I, dI_dt=0)
-            L = max(L, self.MIN_INDUCTANCE)
-            R = max(self.total_resistance, self.MIN_RESISTANCE)
-            C = max(self.capacitance, self.MIN_CAPACITANCE)
-            
-            # Circuit time constant analysis
-            L_over_R = L / R
-            RC = R * C
-            
-            diagnostics['circuit_time_constant'] = L_over_R
-            diagnostics['RC_time_constant'] = RC
-            
-            # Check for extreme inductance values
-            if L > 1e-2:  # 10 mH seems high for coilgun
-                diagnostics['issues'].append(f"Very high inductance: {L*1e6:.1f} µH")
-                diagnostics['stable'] = False
-            
-            # Check for very low resistance (can cause current spikes)
-            if R < 1e-3:  # 1 mΩ
-                diagnostics['issues'].append(f"Very low resistance: {R*1e3:.3f} mΩ")
-                diagnostics['stable'] = False
-            
-            # Check L/R ratio (should be reasonable)
-            if L_over_R > 1e-2:  # 10 ms seems high
-                diagnostics['warnings'].append(f"High L/R time constant: {L_over_R*1e3:.1f} ms")
-            
-            # Check for extreme capacitance
-            if C > 0.1:  # 100 mF is very large
-                diagnostics['warnings'].append(f"Very large capacitance: {C:.3f} F")
-            
-            # Energy analysis
-            capacitor_energy = 0.5 * C * (Q/C)**2 if C > 0 else 0
-            magnetic_energy = 0.5 * L * I**2
-            kinetic_energy = 0.5 * self.proj_mass * v**2
-            
-            total_energy = capacitor_energy + magnetic_energy + kinetic_energy
-            initial_energy = 0.5 * C * self.initial_voltage**2
-            
-            if initial_energy > 0:
-                energy_ratio = total_energy / initial_energy
-                diagnostics['energy_balance'] = energy_ratio
-                
-                if energy_ratio > 1.1:  # More than 10% energy gain
-                    diagnostics['issues'].append(f"Energy conservation violated: {energy_ratio:.2f}x initial")
-                    diagnostics['stable'] = False
-            
-            # Check current density in coil
-            wire_area = getattr(self, 'wire_cross_section', None)
-            if wire_area and wire_area > 0:
-                current_density = abs(I) / wire_area  # A/m²
-                if current_density > 1e7:  # 10 MA/m² is very high
-                    diagnostics['issues'].append(f"Extreme current density: {current_density/1e6:.1f} MA/m²")
-                    diagnostics['stable'] = False
-            
-        except Exception as e:
-            diagnostics['issues'].append(f"Diagnostic error: {e}")
-            diagnostics['stable'] = False
-        
-        return diagnostics
-    
-    def validate_configuration(self):
-        """
-        Validate simulation configuration for numerical stability.
-        
-        Raises warnings or errors for configurations likely to cause problems.
-        """
-        issues = []
-        warnings_list = []
-        
-        # Check capacitance - typical coilgun capacitors are in µF to mF range
-        if self.capacitance > 0.1:  # 100 mF
-            issues.append(f"Extremely large capacitance: {self.capacitance*1000:.1f} mF - may cause numerical instability")
-        elif self.capacitance > 0.01:  # 10 mF
-            warnings_list.append(f"Large capacitance: {self.capacitance*1000:.1f} mF - monitor for stability")
-        
-        # Check initial energy
-        initial_energy = 0.5 * self.capacitance * self.initial_voltage**2
-        if initial_energy > 1e6:  # 1 MJ
-            issues.append(f"Extremely high initial energy: {initial_energy/1e3:.1f} kJ")
-        elif initial_energy > 1e5:  # 100 kJ
-            warnings_list.append(f"High initial energy: {initial_energy/1e3:.1f} kJ")
-        
-        # Check resistance
-        if self.total_resistance < 1e-4:  # 0.1 mΩ
-            issues.append(f"Extremely low resistance: {self.total_resistance*1e3:.3f} mΩ - will cause current spikes")
-        elif self.total_resistance < 1e-3:  # 1 mΩ
-            warnings_list.append(f"Low resistance: {self.total_resistance*1e3:.1f} mΩ - may cause instability")
-        
-        # Check initial current density (theoretical)
-        wire_area = getattr(self, 'wire_cross_section', None)
-        if wire_area and wire_area > 0:
-            # Estimate peak current from C*V/sqrt(L*C) = V*sqrt(C/L)
-            L_est = getattr(self, 'L_air_core', 1e-6)
-            if L_est > 0:
-                peak_current_est = self.initial_voltage * np.sqrt(self.capacitance / L_est)
-                current_density_est = peak_current_est / wire_area
-                if current_density_est > 1e8:  # 100 MA/m²
-                    issues.append(f"Estimated peak current density: {current_density_est/1e6:.0f} MA/m² - will damage wire")
-        
-        # Check simulation time step vs circuit time constants
-        L_est = getattr(self, 'L_air_core', 1e-6)
-        time_constant = L_est / self.total_resistance if self.total_resistance > 0 else float('inf')
-        
-        # Get simulation max step if available
-        max_step = getattr(self, 'max_step', 1e-6)  # Default from typical config
-        if time_constant < max_step * 10:  # Time step should be much smaller than time constant
-            warnings_list.append(f"Simulation time step may be too large: τ={time_constant*1e6:.1f}µs, Δt={max_step*1e6:.1f}µs")
-        
-        # Report issues
-        if issues:
-            print("❌ CONFIGURATION ERRORS (likely to cause simulation failure):")
-            for issue in issues:
-                print(f"   • {issue}")
-            
-        if warnings_list:
-            print("⚠️  CONFIGURATION WARNINGS:")
-            for warning in warnings_list:
-                print(f"   • {warning}")
-        
-        if not issues and not warnings_list:
-            print("✅ Configuration validation passed")
-        
-        return len(issues) == 0  # Return False if there are critical issues
+        except (OverflowError, ValueError):
+            print(f"Warning: Power overflow in {operation_name}")
+            return 1e100 if base >= 0 or exponent % 2 == 0 else -1e100

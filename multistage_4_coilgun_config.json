@@ -26,7 +26,7 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 6,
+                "num_layers": 3,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
                 "packing_factor": 0.95
@@ -39,7 +39,7 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 6,
+                "num_layers": 3,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
                 "packing_factor": 0.95
@@ -52,7 +52,7 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 6,
+                "num_layers": 3,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
                 "packing_factor": 0.95
@@ -65,7 +65,7 @@
                 "inner_diameter": 0.052,
                 "length": 0.064,
                 "wire_gauge_awg": 22,
-                "num_layers": 6,
+                "num_layers": 3,
                 "wire_material": "Copper",
                 "insulation_thickness": 5e-05,
                 "packing_factor": 0.95
@@ -76,11 +76,11 @@
         "simulation": {
             "time_span": [
                 0,
-                0.05
+                0.075
             ],
             "max_step": 1e-06,
             "tolerance": 1e-09,
-            "method": "RK45"
+            "method": "Radau"
         },
         "circuit_model": {
             "switch_resistance": 0.00001,
@@ -90,9 +90,9 @@
             "include_proximity_effect": true
         },
         "magnetic_model": {
-            "calculation_method": "exact_elliptic",
-            "axial_discretization": 1000,
-            "radial_discretization": 100,
+            "calculation_method": "biot_savart",
+            "axial_discretization": 10000,
+            "radial_discretization": 1000,
             "include_saturation": true,
             "include_hysteresis": false
         },
@@ -104,8 +104,8 @@
             "save_interval": 100
         },
         "capacitor": {
-            "capacitance": 0.075,
-            "initial_voltage": 900.0,
+            "capacitance": 0.3,
+            "initial_voltage": 300.0,
             "esr": 0.0001,
             "esl": 5e-08
         },
@@ -113,7 +113,7 @@
             "diameter": 0.0508,
             "length": 0.064,
             "material": "Pure_Iron",
-            "initial_position": -0.015,
+            "initial_position": -0.01,
             "initial_velocity": 0.0
         }
     }
