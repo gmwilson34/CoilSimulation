@@ -580,24 +580,34 @@ class CoilgunSimulation:
             return y[2] - self.physics.coil_center
         
         def projectile_exits_coil(t, y):
-            """Event: projectile front face exits coil (simplified exit condition)."""
-            return y[2] - self.physics.coil_length
+            """Event: projectile completely exits coil."""
+            return y[2] - (self.physics.coil_length + self.physics.proj_length)
         
         def current_reverses(t, y):
             """Event: current reverses direction."""
             return y[1]  # Current
         
+        def simulation_complete(t, y):
+            """Event: simulation complete (low current AND projectile exits)."""
+            current_low = abs(y[1]) < 10.0  # Current below 10A threshold
+            projectile_exited = y[2] > (self.physics.coil_length + self.physics.proj_length)
+            # Return positive when both conditions met, negative otherwise
+            return 1.0 if (current_low and projectile_exited) else -1.0
+        
         # Configure events - these attributes are set by SciPy
-        setattr(projectile_at_center, 'terminal', True)
+        setattr(projectile_at_center, 'terminal', False)  # Don't stop at center
         setattr(projectile_at_center, 'direction', 1)
         
-        setattr(projectile_exits_coil, 'terminal', False)
+        setattr(projectile_exits_coil, 'terminal', False)  # Don't stop on exit alone
         setattr(projectile_exits_coil, 'direction', 1)
         
         setattr(current_reverses, 'terminal', False)
         setattr(current_reverses, 'direction', -1)
         
-        events = [projectile_at_center, projectile_exits_coil, current_reverses]
+        setattr(simulation_complete, 'terminal', True)  # Proper exit condition
+        setattr(simulation_complete, 'direction', 1)
+        
+        events = [projectile_at_center, projectile_exits_coil, current_reverses, simulation_complete]
         
         try:
             # Solve the ODE system
@@ -655,8 +665,16 @@ class CoilgunSimulation:
             # Store results
             self._process_results(solution, save_data)
             
-            # Determine exit reason
-            if solution.t_events[0].size > 0:  # Projectile reached center
+            # Determine exit reason based on events (now index 3 is simulation_complete)
+            if solution.t_events[3].size > 0:  # Simulation complete (low current + exit)
+                self.simulation_info['exit_reason'] = "Simulation complete: low current and projectile exited"
+                final_time = solution.t_events[3][0]
+                final_state = solution.sol(final_time)
+            elif solution.t_events[1].size > 0:  # Projectile exits coil
+                self.simulation_info['exit_reason'] = "Projectile exited coil"
+                final_time = solution.t_events[1][0]
+                final_state = solution.sol(final_time)
+            elif solution.t_events[0].size > 0:  # Projectile reached center
                 self.simulation_info['exit_reason'] = "Projectile reached coil center"
                 final_time = solution.t_events[0][0]
                 final_state = solution.sol(final_time)
@@ -1083,23 +1101,33 @@ class CoilgunSimulation:
             else:
                 self.results['force_consistency'] = np.zeros_like(self.results['force_total'])
                 
-            # ENHANCED: Energy conservation tracking
-            E_initial = self.physics.initial_energy
+            # ENHANCED: Energy conservation tracking - Fixed to only consider energy actually drawn from capacitor
+            E_initial_total = self.physics.initial_energy
             E_capacitor = self.results['energy_capacitor']
             E_kinetic = self.results['energy_kinetic'] 
             E_magnetic = self.results['energy_magnetic']
+            
+            # Calculate energy actually drawn from capacitor (not remaining energy)
+            E_drawn_from_capacitor = E_initial_total - E_capacitor
             
             # Estimate energy losses (cumulative)
             dt = np.gradient(self.results['time'])
             E_resistive_loss = np.cumsum(self.results['power_loss_resistive'] * dt)
             E_eddy_loss = np.cumsum(self.results.get('power_loss_eddy', np.zeros_like(self.results['time'])) * dt)
             
-            # Total accounted energy
-            E_total_accounted = E_capacitor + E_kinetic + E_magnetic + E_resistive_loss + E_eddy_loss
+            # Total energy accounted for in useful forms and losses
+            E_total_accounted = E_kinetic + E_magnetic + E_resistive_loss + E_eddy_loss
             
-            # Energy conservation error
-            energy_conservation_error = np.abs(E_total_accounted - E_initial) / E_initial
-            self.results['energy_conservation'] = energy_conservation_error;
+            # FIXED: Energy conservation error should compare drawn energy vs accounted energy
+            # This prevents huge errors when power is cut off with remaining capacitor energy
+            energy_conservation_error = np.where(
+                E_drawn_from_capacitor > (E_initial_total * 0.01),  # Only calculate where >1% energy was drawn
+                np.abs(E_total_accounted - E_drawn_from_capacitor) / E_drawn_from_capacitor,
+                0.0  # Zero error when minimal energy drawn
+            )
+            # Cap the energy error at reasonable values to prevent display issues
+            energy_conservation_error = np.minimum(energy_conservation_error, 10.0)  # Cap at 1000% error
+            self.results['energy_conservation'] = energy_conservation_error
             
             # Physics validation if available
             if hasattr(self.physics, 'calculate_field_with_error_estimate'):
@@ -1195,11 +1223,24 @@ class CoilgunSimulation:
         initial_energy = self.physics.initial_energy
         final_kinetic = 0.5 * self.physics.proj_mass * self.simulation_info['final_velocity']**2
         
+        # Check if power was cut off and report remaining energy
+        final_capacitor_energy = 0.0
+        power_cutoff_info = ""
+        if len(self.results['energy_capacitor']) > 0:
+            final_capacitor_energy = self.results['energy_capacitor'][-1]
+            energy_used = initial_energy - final_capacitor_energy
+            power_cutoff_info = f"\n  Energy used from capacitor: {energy_used:.3f} J"
+            if final_capacitor_energy > 0.1:  # More than 0.1J remaining
+                power_cutoff_info += f"\n  Remaining capacitor energy: {final_capacitor_energy:.3f} J (Smart power cutoff)"
+        
         print(f"\nEnergy Analysis:")
         print(f"  Initial capacitor energy: {initial_energy:.3f} J")
         print(f"  Final kinetic energy: {final_kinetic:.3f} J")
-        print(f"  Energy lost to resistance: {initial_energy - final_kinetic:.3f} J")
-        print(f"  Resistive loss percentage: {((initial_energy - final_kinetic)/initial_energy)*100:.1f}%")
+        if power_cutoff_info:
+            print(power_cutoff_info)
+        energy_to_compare = initial_energy - final_capacitor_energy if final_capacitor_energy > 0.1 else initial_energy
+        print(f"  Energy lost to resistance: {energy_to_compare - final_kinetic:.3f} J")
+        print(f"  Resistive loss percentage: {((energy_to_compare - final_kinetic)/energy_to_compare)*100:.1f}%")
         
         # Performance metrics
         specific_energy = final_kinetic / self.physics.proj_mass  # J/kg

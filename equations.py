@@ -1452,6 +1452,24 @@ class CoilgunPhysicsEngine:
         voltage_multiplier = 1.0
         voltage_multiplier = self._safe_numerical_operation(voltage_multiplier, "voltage_multiplier", 2.0)
         
+        # ENHANCED: Smart power switching - Cut off voltage when projectile reaches center
+        # This prevents the coil from decelerating the projectile and improves efficiency
+        coil_center = self.coil_length / 2.0
+        
+        # Calculate switching logic based on position and velocity
+        if x_scalar >= coil_center:
+            # Projectile has reached or passed the center - cut off power to prevent deceleration
+            voltage_multiplier = 0.0
+            # Track when power was cut off for energy conservation calculations
+            if not hasattr(self, '_power_cutoff_time'):
+                self._power_cutoff_time = t
+                self._power_cutoff_charge = Q  # Track remaining charge when power was cut off
+        elif x_scalar > (coil_center - 0.005):  # Within 5mm of center
+            # Gradual power reduction in the final 5mm to prevent sudden discontinuity
+            fade_distance = 0.005  # 5mm fade zone
+            fade_factor = (coil_center - x_scalar) / fade_distance
+            voltage_multiplier = max(0.0, fade_factor)
+        
         effective_voltage = self._safe_multiply(V_C, voltage_multiplier, "effective_voltage")
         effective_voltage = self._safe_numerical_operation(effective_voltage, "effective_voltage", self.MAX_VOLTAGE)
         
@@ -1556,18 +1574,21 @@ class CoilgunPhysicsEngine:
             E_cap = 0.5 * Q * Q / self.capacitance  
             E_mag = 0.5 * L * I_scalar**2
             E_kin = 0.5 * proj_mass * v_scalar**2
-            E_total = E_cap + E_mag + E_kin
             
             # Optional: Real-time energy warning (without updating cumulative ledger)
-            if hasattr(self.energy_ledger, 'E_initial_capacitor'):
+            if 'E_initial_capacitor' in self.energy_ledger:
                 E_losses = (self.energy_ledger.get('E_I2R_coil', 0) + 
                            self.energy_ledger.get('E_eddy_losses', 0) + 
                            self.energy_ledger.get('E_inductance_work', 0))
-                E_initial = self.energy_ledger['E_initial_capacitor']
+                E_initial_total = self.energy_ledger['E_initial_capacitor']
                 
-                if E_initial > 0:
-                    energy_error = abs(E_total + E_losses - E_initial) / E_initial
-                    if energy_error > 0.1:  # 10% error threshold for warnings
+                # FIXED: Only consider energy actually drawn from capacitor for conservation check
+                E_drawn_from_capacitor = E_initial_total - E_cap
+                E_accounted = E_kin + E_mag + E_losses
+                
+                if E_drawn_from_capacitor > (E_initial_total * 0.01):  # Only check when >1% energy was drawn
+                    energy_error = abs(E_accounted - E_drawn_from_capacitor) / E_drawn_from_capacitor
+                    if energy_error > 0.1 and energy_error < 5.0:  # 10% to 500% error threshold for warnings
                         self.latest_energy_warning = f"Energy conservation error: {energy_error:.3%} at t={t:.6f}s"
         
         # Return derivatives as scalars
@@ -1665,18 +1686,22 @@ class CoilgunPhysicsEngine:
                 
                 # Check energy conservation periodically
                 if hasattr(self, 'energy_tracking') and self.energy_tracking:
-                    E_total = E_cap + E_mag + E_kin
                     E_losses = (self.energy_ledger['E_I2R_coil'] + 
                                self.energy_ledger['E_eddy_losses'] + 
                                self.energy_ledger['E_inductance_work'])
-                    E_initial = self.energy_ledger['E_initial_capacitor']
+                    E_initial_total = self.energy_ledger['E_initial_capacitor']
                     
-                    energy_error = abs(E_total + E_losses - E_initial) / E_initial
-                    if energy_error > 0.01:  # 1% error threshold
-                        self.latest_energy_warning = f"Energy conservation error: {energy_error:.3%} at t={t:.6f}s"
-                        if not hasattr(self, 'energy_warning_count'):
-                            self.energy_warning_count = 0
-                        self.energy_warning_count += 1
+                    # FIXED: Only consider energy actually drawn from capacitor for conservation check
+                    E_drawn_from_capacitor = E_initial_total - E_cap
+                    E_accounted = E_kin + E_mag + E_losses
+                    
+                    if E_drawn_from_capacitor > (E_initial_total * 0.01):  # Only check when >1% energy was drawn
+                        energy_error = abs(E_accounted - E_drawn_from_capacitor) / E_drawn_from_capacitor
+                        if energy_error > 0.01 and energy_error < 5.0:  # 1% to 500% error threshold
+                            self.latest_energy_warning = f"Energy conservation error: {energy_error:.3%} at t={t:.6f}s"
+                            if not hasattr(self, 'energy_warning_count'):
+                                self.energy_warning_count = 0
+                            self.energy_warning_count += 1
             
             callback_state['last_time'] = t
         

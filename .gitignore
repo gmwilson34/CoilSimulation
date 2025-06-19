@@ -7,6 +7,7 @@
 !visualizations_results_multistage_5_coilgun_config/
 !visualizations_test_config/
 !GPUAccelerationFiles/
+!GPUAccelerationFiles/**
 
 # Also, do not ignore files in the root directory
 !/*
