@@ -544,52 +544,7 @@ def setup_output_parameters() -> Dict[str, Any]:
     }
 
 
-def setup_timing_optimization_parameters() -> Dict[str, Any]:
-    """Collect timing optimization configuration parameters for multi-stage operation"""
-    print("\n" + "="*50)
-    print("TIMING OPTIMIZATION CONFIGURATION")
-    print("="*50)
-    print("Configure advanced timing for multi-stage coilgun operation")
-    
-    config: Dict[str, Any] = {
-        "enabled": get_yes_no_input(
-            "Enable timing optimization?", 
-            default=True
-        )
-    }
-    
-    if config["enabled"]:
-        config["pre_charge"] = get_yes_no_input(
-            "Enable pre-charge timing (start charging before projectile arrives)?", 
-            default=True
-        )
-        config["optimal_force_timing"] = get_yes_no_input(
-            "Enable optimal force timing calculation?", 
-            default=True
-        )
-        config["charge_time_factor"] = get_float_input(
-            "Charge time factor (multiples of L/R time constant)", 
-            default=3.0, min_val=1.0, max_val=10.0
-        )
-        config["optimal_force_position"] = get_float_input(
-            "Optimal force position (fraction of coil length)", 
-            default=0.3, min_val=0.1, max_val=0.9
-        )
-        config["turn_off_position"] = get_float_input(
-            "Turn-off position (fraction of coil length)", 
-            default=0.7, min_val=0.5, max_val=1.0
-        )
-        config["velocity_prediction_method"] = get_choice_input(
-            "Velocity prediction method", 
-            ["linear", "quadratic", "exponential"], 
-            default="linear"
-        )
-        config["safety_margin"] = get_float_input(
-            "Timing safety margin (seconds)", 
-            default=1e-6, min_val=1e-9, max_val=1e-3
-        )
-    
-    return config
+# Timing optimization configuration removed
 
 
 def setup_advanced_physics_parameters() -> Dict[str, Any]:
@@ -722,9 +677,7 @@ def create_single_stage_configuration(materials: Dict[str, Any]) -> Dict[str, An
     if get_yes_no_input("Configure advanced physics models?", default=True):
         config["advanced_physics"] = setup_advanced_physics_parameters()
     
-    # Add timing optimization (useful even for single stage)
-    if get_yes_no_input("Configure timing optimization?", default=False):
-        config["timing_optimization"] = setup_timing_optimization_parameters()
+    # Timing optimization removed
     
     return config
 
@@ -782,9 +735,7 @@ def create_multi_stage_configuration(materials: Dict[str, Any]) -> Dict[str, Any
     if get_yes_no_input("Configure advanced physics models for all stages?", default=True):
         config["shared"]["advanced_physics"] = setup_advanced_physics_parameters()
     
-    # Setup timing optimization (essential for multi-stage operation)
-    print("\nTiming optimization is recommended for multi-stage operation:")
-    config["shared"]["timing_optimization"] = setup_timing_optimization_parameters()
+    # Timing optimization removed from multi-stage operation
     
     # Setup configurations for each group
     group_configs = {}

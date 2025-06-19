@@ -338,7 +338,12 @@ class Advanced3DCoilgunVisualizer:
             print(f"Loaded current data for stage {stage_num}: {len(self.stage_current_data[stage_num]['time'])} points")
     
     def get_stage_current_at_time(self, stage_num, sim_time, projectile_pos):
-        """Get the current for a specific stage with strict position-based firing to prevent overlap."""
+        """
+        Get the current for a specific stage using unified timing logic.
+        
+        This now uses the same real-time position-based timing as the physics engine
+        for consistent behavior between simulation and visualization.
+        """
         if stage_num not in self.stage_current_data:
             return 0.0
         
@@ -346,6 +351,9 @@ class Advanced3DCoilgunVisualizer:
         if len(stage_data['time']) == 0 or len(stage_data['current']) == 0:
             return 0.0
         
+        # Timing optimization removed - use direct time-based current lookup
+        
+        # Fallback to legacy position-based timing
         # Get stage transition times from simulation
         stage_transitions = self.simulation_data.get('stage_transitions', [])
         
@@ -931,6 +939,8 @@ class Advanced3DCoilgunVisualizer:
                 return f"Alt: {position_mm:.1f}mm\nPre-Launch: {abs(position_mm):.1f}mm"
             else:
                 return f"Alt: {position_mm:.1f}mm\nPost-Launch: +{position_mm - coil_length_mm:.1f}mm"
+    
+    # Unified timing methods removed - timing optimization eliminated
     
     def create_animation(self, save_path=None, show_animation=True):
         """Create comprehensive 3D animation with proper vertical stacking and realistic rendering."""

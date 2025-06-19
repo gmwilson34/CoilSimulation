@@ -1095,14 +1095,24 @@ class CoilgunFieldVisualizer:
         
         plt.show()
     
-    def plot_onaxis_field_profile(self, current_values=[100, 300, 500], save_path=None):
+    def plot_onaxis_field_profile(self, current_values=None, save_path=None):
         """
         Plot magnetic field and force along the coil axis for different currents.
         
         Args:
-            current_values: List of current values to plot (A)
+            current_values: List of current values to plot (A). If None, uses circuit-based estimation.
             save_path: Path to save the plot (optional)
         """
+        if current_values is None:
+            # Use circuit-based estimation instead of arbitrary defaults
+            initial_voltage = self.physics.initial_voltage
+            estimated_max_current = initial_voltage / self.physics.total_resistance
+            current_values = [
+                estimated_max_current * 0.3,
+                estimated_max_current * 0.7,
+                estimated_max_current
+            ]
+            print(f"Using circuit-based current estimates for field profile: {[f'{c:.0f}A' for c in current_values]}")
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         
         # Create color map for different currents
@@ -1302,6 +1312,10 @@ class CoilgunFieldVisualizer:
         position_data = simulation_results.results['position']
         
         # Select frames for animation
+        if len(time_data) < 10:
+            print("Insufficient time data for animation (need at least 10 points)")
+            return None
+        
         num_frames = min(100, len(time_data) // 10)  # Limit to 100 frames
         frame_indices = np.linspace(0, len(time_data)-1, num_frames, dtype=int, retstep=False)
         
@@ -1395,12 +1409,19 @@ class CoilgunFieldVisualizer:
             plt.tight_layout()
             return artists
         
+        if len(field_frames) == 0:
+            print("No field frames calculated - cannot create animation")
+            return None
+        
         anim = FuncAnimation(fig, animate, frames=len(field_frames), 
                            interval=interval, blit=False, repeat=True)  # type: ignore
         
         if save_path:
-            anim.save(save_path, writer='pillow', fps=1000//interval)
-            print(f"Animation saved to: {save_path}")
+            try:
+                anim.save(save_path, writer='pillow', fps=1000//interval)
+                print(f"Animation saved to: {save_path}")
+            except Exception as e:
+                print(f"Failed to save animation: {e}")
         
         plt.show()
         return anim
@@ -1435,6 +1456,89 @@ class CoilgunFieldVisualizer:
             label='Projectile'
         )
         ax.add_patch(projectile)
+
+
+def extract_actual_current_data(time_series_data=None, simulation_results=None, physics_engine=None):
+    """
+    Extract actual current data from multiple possible sources.
+    
+    Args:
+        time_series_data: Time series data dict (optional)
+        simulation_results: CoilgunSimulation results object (optional) 
+        physics_engine: Physics engine for circuit-based fallback (optional)
+        
+    Returns:
+        tuple: (current_values_list, data_source_description, max_current, avg_current)
+    """
+    # Try to get current data from multiple sources
+    current_data = None
+    data_source = None
+    
+    # Source 1: simulation_results object
+    if simulation_results is not None and hasattr(simulation_results, 'results'):
+        if simulation_results.results.get('current') is not None:
+            current_data = simulation_results.results['current']
+            data_source = "simulation_results.results"
+    
+    # Source 2: time_series_data dict
+    if current_data is None and time_series_data is not None:
+        # Try different key formats
+        for key in ['current_A', 'current', 'Current']:
+            if key in time_series_data and time_series_data[key] is not None:
+                current_data = time_series_data[key]
+                data_source = f"time_series_data['{key}']"
+                break
+    
+    # Source 3: simulation_results simulation_info
+    if current_data is None and simulation_results is not None:
+        if hasattr(simulation_results, 'simulation_info'):
+            max_current = simulation_results.simulation_info.get('max_current', None)
+            if max_current is not None and max_current > 0:
+                # Create a simple current profile based on max current
+                current_data = [0, max_current * 0.5, max_current, max_current * 0.3, 0]
+                data_source = f"simulation_info.max_current ({max_current:.1f}A)"
+    
+    if current_data is not None and len(current_data) > 0:
+        current_array = np.array(current_data)
+        nonzero_currents = current_array[current_array != 0]
+        
+        if len(nonzero_currents) > 0:
+            max_current = np.max(np.abs(nonzero_currents))
+            avg_current = np.mean(np.abs(nonzero_currents))
+            
+            # Create meaningful current values based on actual data
+            if max_current > avg_current * 1.2:
+                # Good dynamic range in the data
+                currents = [
+                    avg_current * 0.3,  # Low current
+                    avg_current,        # Average current  
+                    max_current         # Peak current
+                ]
+            else:
+                # Limited dynamic range, use peak current as basis
+                currents = [
+                    max_current * 0.3,  # 30% of peak
+                    max_current * 0.7,  # 70% of peak
+                    max_current         # Peak current
+                ]
+            
+            return currents, data_source, max_current, avg_current
+    
+    # Fallback to circuit-based estimation if no actual data
+    if physics_engine is not None:
+        initial_voltage = physics_engine.initial_voltage
+        estimated_max_current = initial_voltage / physics_engine.total_resistance
+        
+        currents = [
+            estimated_max_current * 0.3,
+            estimated_max_current * 0.7,
+            estimated_max_current
+        ]
+        data_source = f"circuit-based estimate (V={initial_voltage}V, R={physics_engine.total_resistance:.3f}Ω)"
+        return currents, data_source, estimated_max_current, estimated_max_current * 0.7
+    
+    # Ultimate fallback - but this should be avoided
+    return [50, 100, 200], "ultimate_fallback", 200, 100
 
 
 def create_enhanced_physics_visualizations(time_series_data, output_dir, visualizer):
@@ -1917,6 +2021,7 @@ def create_stage_performance_summary(summary_data, output_path):
 
 
 def create_comprehensive_visualization_suite(config_file, simulation_results=None, 
+                                           time_series_data=None,
                                            output_dir="comprehensive_visualizations"):
     """
     Create a comprehensive suite of visualizations including enhanced physics analysis.
@@ -1924,6 +2029,7 @@ def create_comprehensive_visualization_suite(config_file, simulation_results=Non
     Args:
         config_file: Path to coilgun configuration file
         simulation_results: CoilgunSimulation results (optional)
+        time_series_data: Time series data dict (optional)
         output_dir: Directory to save visualization files
     """
     # Create output directory
@@ -1936,30 +2042,36 @@ def create_comprehensive_visualization_suite(config_file, simulation_results=Non
     physics = CoilgunPhysicsEngine(config_file)
     visualizer = CoilgunFieldVisualizer(physics)
     
-    # NEW: Create enhanced physics visualizations if simulation results available
+    # NEW: Create enhanced physics visualizations if data available
+    physics_data = None
     if simulation_results is not None and hasattr(simulation_results, 'results'):
+        physics_data = simulation_results.results
+    elif time_series_data is not None:
+        physics_data = time_series_data
+    
+    if physics_data is not None:
         print("\n0. Creating enhanced physics analysis...")
-        create_enhanced_physics_visualizations(simulation_results.results, output_path, visualizer)
+        create_enhanced_physics_visualizations(physics_data, output_path, visualizer)
     
-    # Extract actual current values from simulation if available
-    currents = [100, 300, 500]  # Default values
-    current_labels = ["100A", "300A", "500A"]
+    # Extract actual current values using robust helper function
+    currents, data_source, max_current, avg_current = extract_actual_current_data(
+        time_series_data=time_series_data,
+        simulation_results=simulation_results,
+        physics_engine=physics
+    )
     
-    if simulation_results is not None and hasattr(simulation_results, 'results') and simulation_results.results.get('current') is not None:
-        current_data = simulation_results.results['current']
-        if len(current_data) > 0:
-            max_current = np.max(np.abs(current_data))
-            avg_current = np.mean(np.abs(current_data[current_data != 0]))
-            
-            currents = [
-                avg_current * 0.5,  # 50% of average
-                avg_current,        # Average current
-                max_current         # Peak current
-            ]
-            current_labels = [f"{c:.0f}A" for c in currents]
-            print(f"Using actual simulation currents: {current_labels}")
+    current_labels = [f"{c:.0f}A" for c in currents]
+    
+    if "circuit-based estimate" in data_source:
+        print(f"Using circuit-based current estimates: {current_labels}")
+        print(f"  {data_source}")
+    elif "ultimate_fallback" in data_source:
+        print(f"⚠️  Using fallback current values: {current_labels}")
+        print(f"  No simulation data available")
     else:
-        print(f"Using default currents: {current_labels}")
+        print(f"✓ Using actual simulation currents: {current_labels}")
+        print(f"  Data source: {data_source}")
+        print(f"  Peak current: {max_current:.1f}A, Average: {avg_current:.1f}A")
     
     # 1. 3D Field Visualization
     print("\n1. Creating 3D magnetic field visualization...")
@@ -2005,19 +2117,25 @@ def create_comprehensive_visualization_suite(config_file, simulation_results=Non
         print("\n4. Creating field evolution animations...")
         
         # 2D field evolution animation
-        visualizer.animate_field_evolution(
-            simulation_results,
-            save_path=output_path / "field_evolution_2d.gif",
-            interval=100
-        )
+        try:
+            visualizer.animate_field_evolution(
+                simulation_results,
+                save_path=output_path / "field_evolution_2d.gif",
+                interval=100
+            )
+        except Exception as e:
+            print(f"   Warning: Field evolution animation failed: {e}")
         
         # 3D projectile motion animation
         print("\n5. Creating 3D projectile motion animation...")
-        visualizer.animate_3d_projectile_motion(
-            simulation_results,
-            save_path=output_path / "projectile_motion_3d.gif",
-            interval=150
-        )
+        try:
+            visualizer.animate_3d_projectile_motion(
+                simulation_results,
+                save_path=output_path / "projectile_motion_3d.gif",
+                interval=150
+            )
+        except Exception as e:
+            print(f"   Warning: 3D projectile animation failed: {e}")
     
     print(f"\nComprehensive visualization suite complete!")
     print(f"Files saved to: {output_path.absolute()}")
@@ -2506,13 +2624,26 @@ def main():
                 create_comprehensive_visualization_suite(
                     config_file, 
                     simulation_results=sim,
+                    time_series_data=time_series_data,
                     output_dir=output_dir
                 )
                 
-                # Create individual 3D field visualization
+                # Create individual 3D field visualization using actual simulation data
                 print("Creating static 3D field visualization...")
-                max_current = np.max(sim.results['current']) if sim.results['current'] is not None else 300
-                initial_position = sim.results['position'][0] if sim.results['position'] is not None else physics.initial_position
+                
+                # Extract actual current for visualization
+                max_current = 300  # fallback
+                if 'current' in sim.results and sim.results['current'] is not None:
+                    current_data = np.array(sim.results['current'])
+                    if len(current_data) > 0:
+                        max_current = np.max(np.abs(current_data))
+                        print(f"Using actual peak current from simulation: {max_current:.1f}A")
+                    else:
+                        print("No current data in simulation results, using fallback")
+                else:
+                    print("No current data available, using fallback")
+                
+                initial_position = sim.results['position'][0] if sim.results.get('position') is not None else physics.initial_position
                 
                 visualizer.plot_3d_field_visualization(
                     current=max_current,
@@ -2528,10 +2659,12 @@ def main():
             # Create field visualization suite without animation
             create_field_visualization_suite(config_file, output_dir)
             
-            # Create 3D field visualization
+            # Create 3D field visualization using circuit-based estimation
             print("Creating 3D field visualization...")
+            estimated_current = physics.initial_voltage / physics.total_resistance
+            print(f"Using circuit-based current estimate: {estimated_current:.0f}A")
             visualizer.plot_3d_field_visualization(
-                current=300,  # Default current
+                current=estimated_current,
                 save_path=Path(output_dir) / "3d_field_static.png",
                 interactive=False,
                 projectile_position=physics.initial_position

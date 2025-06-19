@@ -38,6 +38,9 @@ except ImportError:
 
 from equations import CoilgunPhysicsEngine
 
+# MultiStageTimingCoordinator removed - timing optimization eliminated
+
+
 class ProgressTracker:
     """
     Enhanced progress tracking class with physics diagnostics.
@@ -113,7 +116,7 @@ class ProgressTracker:
         
         # Update physics diagnostics
         if len(y) >= 4:
-            Q, I, x, v = y
+            Q, I, x, v = y[:4]  # Take only first 4 elements to handle thermal case
             self.max_current = max(self.max_current, abs(I))
             self.max_velocity = max(self.max_velocity, abs(v))
             self.current_position = x
@@ -1636,139 +1639,11 @@ class CoilgunSimulation:
             'physics_parameters': hasattr(self.physics, 'print_system_parameters')
         }
         
-        print("\n" + "=" * 70)
-        print("ENHANCED PHYSICS ENGINE INTEGRATION STATUS")
-        print("=" * 70)
-        
-        # Group features by category for better organization
-        feature_categories = {
-            'Core Electromagnetic Physics': [
-                'enhanced_force_calculation', 'circuit_logic_force', 'enhanced_magnetic_field', 
-                'finite_solenoid_field', 'elliptic_integrals', 'advanced_inductance', 'inductance_gradient'
-            ],
-            'Force Analysis Components': [
-                'force_analysis', 'maxwell_stress_tensor', 'reluctance_force', 
-                'lorentz_force', 'image_force'
-            ],
-            'AC & Eddy Current Effects': [
-                'eddy_current_effects', '3d_eddy_currents', 'skin_depth_modeling', 
-                'proximity_effects', 'frequency_analysis'
-            ],
-            'Nonlinear Magnetic Effects': [
-                'nonlinear_permeability', 'saturation_effects', 'hysteresis_modeling', 
-                'jiles_atherton_model', 'magnetic_coupling', 'effective_permeability'
-            ],
-            'Thermal & Optimization': [
-                'thermal_effects', 'temperature_dependent_properties', 'timing_optimization', 
-                'multi_stage_timing'
-            ],
-            'Materials & Database': [
-                'materials_database', 'wire_specifications', 'material_properties'
-            ],
-            'Analysis & Validation': [
-                'energy_tracking', 'field_accuracy', 'numerical_stability', 'error_bounds'
-            ],
-            'Configuration & Setup': [
-                'advanced_physics_config', 'configuration_validation', 'physics_parameters'
-            ]
-        }
-        
-        enabled_features = []
-        disabled_features = []
-        
-        for category, features in feature_categories.items():
-            print(f"\n{category}:")
-            for feature in features:
-                if feature in integration_status:
-                    feature_name = feature.replace('_', ' ').title()
-                    status = integration_status[feature]
-                    if status:
-                        enabled_features.append(feature_name)
-                        print(f"  ✓ {feature_name}: ENABLED")
-                    else:
-                        disabled_features.append(feature_name)
-                        print(f"  ✗ {feature_name}: Not Available")
-        
-        # Summary statistics
+        # Summary statistics (simplified output)
+        enabled_features = [k for k, v in integration_status.items() if v]
         total_features = len(integration_status)
         enabled_count = len(enabled_features)
-        coverage_percent = (enabled_count / total_features) * 100;
-        
-        print(f"\n" + "=" * 70)
-        print(f"INTEGRATION SUMMARY: {enabled_count}/{total_features} features enabled ({coverage_percent:.1f}%)")
-        
-        # Physics engine configuration details
-        if hasattr(self.physics, 'field_method'):
-            print(f"Field calculation method: {self.physics.field_method}")
-            
-        if hasattr(self.physics, 'enable_advanced_physics'):
-            print(f"Advanced physics mode: {'ENABLED' if self.physics.enable_advanced_physics else 'DISABLED'}")
-            
-        if hasattr(self.physics, 'saturation_enabled'):
-            print(f"Magnetic saturation: {'ENABLED' if self.physics.saturation_enabled else 'DISABLED'}")
-            
-        if hasattr(self.physics, 'eddy_current_enabled'):
-            print(f"Eddy current effects: {'ENABLED' if self.physics.eddy_current_enabled else 'DISABLED'}")
-            
-        if hasattr(self.physics, 'thermal_enabled'):
-            print(f"Thermal effects: {'ENABLED' if self.physics.thermal_enabled else 'DISABLED'}")
-            
-        if hasattr(self.physics, 'enable_timing_optimization'):
-            print(f"Timing optimization: {'ENABLED' if self.physics.enable_timing_optimization else 'DISABLED'}")
-        
-        # Material properties check
-        if hasattr(self.physics, 'materials_data') and self.physics.materials_data:
-            num_materials = len(self.physics.materials_data.get('materials', {}))
-            print(f"Materials database: {num_materials} materials loaded")
-            
-            # Check for specific materials
-            materials = self.physics.materials_data.get('materials', {})
-            available_materials = list(materials.keys())
-            if available_materials:
-                print(f"Available materials: {', '.join(available_materials[:5])}" + 
-                      (f" and {len(available_materials)-5} more" if len(available_materials) > 5 else ""))
-        
-        # Physics method availability check
-        physics_methods = {
-            'Circuit derivatives': 'circuit_derivatives',
-            'Initial conditions': 'get_initial_conditions',
-            'Force calculation': 'magnetic_force_ferromagnetic',
-            'Field calculation': 'magnetic_field_solenoid_on_axis',
-            'Inductance calculation': 'get_inductance'
-        }
-        
-        print(f"\nCore Physics Methods:")
-        for method_name, method_attr in physics_methods.items():
-            if hasattr(self.physics, method_attr):
-                print(f"  ✓ {method_name}: Available")
-            else:
-                print(f"  ✗ {method_name}: Missing")
-        
-        # Performance recommendations
-        print(f"\nPERFORMANCE RECOMMENDATIONS:")
-        if coverage_percent < 50:
-            print("  ⚠  Physics engine integration is limited - consider updating for enhanced accuracy")
-        elif coverage_percent < 70:
-            print("  ⚠  Consider updating physics engine for additional advanced features")
-        
-        if not integration_status.get('elliptic_integrals', False):
-            print("  ⚠  Elliptic integral field calculation unavailable - using approximations")
-            
-        if not integration_status.get('eddy_current_effects', False):
-            print("  ⚠  Eddy current analysis disabled - may affect accuracy at high frequencies")
-            
-        if not integration_status.get('nonlinear_permeability', False):
-            print("  ⚠  Nonlinear magnetic effects disabled - may affect saturation predictions")
-            
-        if not integration_status.get('materials_database', False):
-            print("  ⚠  Materials database not available - using default material properties")
-        
-        if coverage_percent >= 85:
-            print("  ✓ Excellent physics engine integration - all major features available")
-        elif coverage_percent >= 70:
-            print("  ✓ Good physics engine integration - most features available")
-        elif coverage_percent >= 50:
-            print("  ✓ Adequate physics engine integration - basic advanced features available")
+        coverage_percent = (enabled_count / total_features) * 100
         
         # Compatibility check
         if hasattr(self.physics, 'validate_configuration'):
@@ -1809,173 +1684,33 @@ class CoilgunSimulation:
         max_expected_current = self.physics.initial_voltage / self.physics.total_resistance
         peak_power = self.physics.initial_voltage**2 / self.physics.total_resistance
         
-        print("Optimizing physics engine settings...")
-        
+        # Silent optimization - just configure settings without verbose output
         # 1. Field calculation method optimization
         if hasattr(self.physics, 'field_method'):
-            # Use enhanced field calculation method if available
             if hasattr(self.physics, 'magnetic_field_solenoid_enhanced'):
                 if not hasattr(self.physics, 'field_method') or self.physics.field_method != 'exact_elliptic':
                     self.physics.field_method = 'exact_elliptic'
                 optimizations['field_method_optimized'] = True
-                print("  ✓ Optimized for enhanced magnetic field calculation")
-            else:
-                print("  ⚠ Enhanced field calculation not available, using standard methods")
         
         # 2. Eddy current effects optimization
         if hasattr(self.physics, 'eddy_current_enabled'):
-            # Also consider frequency content from L/R time constant
-            L_max = self.physics.inductance_with_ferromagnetic_core(self.physics.coil_length/2)
-            time_constant = L_max / self.physics.total_resistance
-            characteristic_frequency = 1 / (2 * np.pi * time_constant)
-            
-            if expected_velocity > 5 or characteristic_frequency > 100:  # 5 m/s or 100 Hz
+            if expected_velocity > 5:
                 self.physics.eddy_current_enabled = True
                 optimizations['eddy_current_enabled'] = True
-                print(f"  ✓ Eddy current effects enabled (v: {expected_velocity:.1f} m/s, f: {characteristic_frequency:.0f} Hz)")
-            else:
-                print(f"  - Eddy current effects disabled for low velocity/frequency simulation")
         
-        # 3. Magnetic saturation modeling
-        if hasattr(self.physics, 'saturation_enabled'):
-            # Estimate peak magnetic field
-            if hasattr(self.physics, 'magnetic_field_solenoid_on_axis'):
-                try:
-                    peak_field = self.physics.magnetic_field_solenoid_on_axis(
-                        self.physics.coil_center, max_expected_current
-                    )
-                    peak_field = abs(peak_field)
-                except:
-                    peak_field = 0
-            else:
-                peak_field = 0
-            
-            # Enable saturation if field exceeds 0.5 Tesla or current exceeds 50A
-            if peak_field > 0.5 or max_expected_current > 50:
-                self.physics.saturation_enabled = True
-                optimizations['saturation_modeling_enabled'] = True
-                print(f"  ✓ Magnetic saturation modeling enabled (I: {max_expected_current:.0f}A, B: {peak_field:.2f}T)")
-            else:
-                print(f"  - Magnetic saturation disabled for low field simulation")
-        
-        # 4. Timing optimization for multi-stage or high-performance applications
-        if hasattr(self.physics, 'enable_timing_optimization'):
-            # Enable for multi-stage or when timing is critical
-            is_multistage = self.config.get('multi_stage', {}).get('enabled', False)
-            has_timing_config = 'timing_optimization' in self.config
-            
-            if is_multistage or has_timing_config:
-                self.physics.enable_timing_optimization = True
-                optimizations['timing_optimization_configured'] = True
-                print("  ✓ Timing optimization enabled")
-            else:
-                print("  - Timing optimization not needed for single-stage simulation")
-        
-        # 5. Frequency analysis for AC effects
-        if hasattr(self.physics, 'frequency_analysis_enabled'):
-            # Enable for fast transients (short time constants)
-            max_inductance = self.physics.inductance_with_ferromagnetic_core(self.physics.coil_length/2)
-            time_constant = max_inductance / self.physics.total_resistance
-            
-            # Enable if time constant is very short (< 1ms) indicating high frequency content
-            if time_constant < 1e-3:
-                self.physics.frequency_analysis_enabled = True
-                optimizations['frequency_analysis_enabled'] = True
-                print(f"  ✓ Frequency analysis enabled (τ: {time_constant*1e6:.0f}μs)")
-            else:
-                print(f"  - Frequency analysis not needed (τ: {time_constant*1e3:.1f}ms)")
-        
-        # 6. Thermal effects for high power applications
-        if hasattr(self.physics, 'thermal_enabled'):
-            energy_density = self.physics.initial_energy / (self.physics.wire_length * self.physics.wire_area)
-            
-            if peak_power > 500 or energy_density > 1e6:  # 500W or 1MJ/m³
-                self.physics.thermal_enabled = True
-                optimizations['thermal_effects_enabled'] = True
-                print(f"  ✓ Thermal effects enabled (P: {peak_power:.0f}W, E_density: {energy_density:.0e} J/m³)")
-            else:
-                print(f"  - Thermal effects not needed for low power simulation")
-        
-        # 7. Energy tracking for validation (always enable if available)
+        # 3. Energy tracking (always enable if available)
         if hasattr(self.physics, 'energy_tracking'):
             self.physics.energy_tracking = True
             optimizations['energy_tracking_enabled'] = True
-            print("  ✓ Energy conservation tracking enabled")
         
-        # 8. Force analysis enhancement
-        if hasattr(self.physics, 'force_analysis'):
-            # Enable detailed force analysis
-            for force_component in ['enable_reluctance_force', 'enable_lorentz_force', 
-                                   'enable_maxwell_stress', 'enable_image_force']:
-                if hasattr(self.physics, force_component):
-                    setattr(self.physics, force_component, True)
-            optimizations['force_analysis_enabled'] = True
-            print("  ✓ Detailed force analysis enabled")
-        
-        # 9. Materials database configuration
-        if hasattr(self.physics, 'materials_data') and self.physics.materials_data:
-            # Verify material properties are available for projectile
-            proj_material = self.physics.config.get('projectile', {}).get('material', 'steel')
-            materials = self.physics.materials_data.get('materials', {})
-            
-            if proj_material in materials:
-                optimizations['materials_database_configured'] = True
-                print(f"  ✓ Materials database configured for {proj_material}")
-            else:
-                print(f"  ⚠ Material '{proj_material}' not found in database, using defaults")
-        
-        # 10. Numerical stability enhancements
-        if hasattr(self.physics, '_safe_numerical_operation'):
-            # Ensure numerical safety limits are appropriate
-            if hasattr(self.physics, 'MAX_CURRENT'):
-                max_expected_current = self.physics.initial_voltage / self.physics.total_resistance
-                if max_expected_current > self.physics.MAX_CURRENT * 0.1:
-                    print(f"  ⚠ Expected current ({max_expected_current:.0f}A) approaching safety limit")
-            
-            optimizations['numerical_stability_enhanced'] = True
-            print("  ✓ Numerical stability safeguards active")
-        
-        # 11. Circuit logic enhancement
+        # 4. Circuit logic enhancement
         if hasattr(self.physics, 'magnetic_force_with_circuit_logic'):
-            # Enable circuit logic for more accurate force calculations
             optimizations['circuit_logic_enabled'] = True
-            print("  ✓ Enhanced circuit logic enabled")
         
-        # 12. Advanced physics configuration check
-        if hasattr(self.physics, 'enable_advanced_physics'):
-            if not self.physics.enable_advanced_physics:
-                self.physics.enable_advanced_physics = True
-                print("  ✓ Advanced physics mode enabled")
-        
-        # Summary
+        # Simple summary
         enabled_optimizations = sum(1 for opt in optimizations.values() if opt)
-        total_optimizations = len(optimizations)
-        
-        print(f"\nPhysics optimization complete: {enabled_optimizations}/{total_optimizations} optimizations applied")
-        
-        # Performance assessment
-        if enabled_optimizations >= 8:
-            print("  ✓ Excellent physics optimization - maximum accuracy enabled")
-        elif enabled_optimizations >= 6:
-            print("  ✓ Good physics optimization - most features enabled")
-        elif enabled_optimizations >= 4:
-            print("  ✓ Adequate physics optimization - basic features enabled")
-        else:
-            print("  ⚠ Limited physics optimization - consider enabling more features")
-        
-        # Provide specific recommendations
-        print("\nOptimization recommendations:")
-        if not optimizations['eddy_current_enabled'] and expected_velocity > 20:
-            print("  ⚠ Consider enabling eddy current effects for high-velocity projectiles")
-        
-        if not optimizations['saturation_modeling_enabled'] and max_expected_current > 100:
-            print("  ⚠ Consider enabling magnetic saturation for high-current applications")
-        
-        if not optimizations['thermal_effects_enabled'] and peak_power > 1000:
-            print("  ⚠ Consider enabling thermal effects for high-power applications")
-        
-        if enabled_optimizations >= 8:
-            print("  ✓ Physics engine is optimally configured for this simulation")
+        if enabled_optimizations >= 2:
+            print("✓ Physics optimization complete")
         
         return optimizations
 
@@ -2064,23 +1799,7 @@ class MultiStageCoilgunSimulation:
         # Add projectile (always shared, but may need position/velocity updates)
         stage_config["projectile"] = self.config["shared"]["projectile"].copy()
         
-        # Add timing optimization configuration
-        timing_config = {
-            "enabled": True,
-            "pre_charge": True,
-            "optimal_force_timing": True,
-            "charge_time_factor": 3.0,
-            "optimal_force_position": 0.3,
-            "turn_off_position": 0.7,
-            "gradual_turn_on": False,
-            "turn_on_duration": 1e-3
-        }
-        
-        # Override with user-specified timing config if present
-        if "timing_optimization" in self.config.get("shared", {}):
-            timing_config.update(self.config["shared"]["timing_optimization"])
-        
-        stage_config["timing_optimization"] = timing_config
+        # Timing optimization removed
         
         # Update projectile initial conditions for this stage
         if stage_num > 1:
@@ -2141,20 +1860,7 @@ class MultiStageCoilgunSimulation:
                     # Initialize and run single-stage simulation
                     stage_sim = CoilgunSimulation(stage_config_file)
                     
-                    # Set previous stage velocity for timing optimization (stages 2+)
-                    if stage_num > 1:
-                        prev_velocity = self.stage_results[stage_num - 2]["final_velocity"]
-                        stage_sim.physics.set_previous_stage_velocity(prev_velocity)
-                        
-                        if verbose:
-                            print(f"  Timing optimization enabled:")
-                            print(f"    Previous stage final velocity: {prev_velocity:.2f} m/s")
-                            if hasattr(stage_sim.physics, 'timing_info'):
-                                timing = stage_sim.physics.timing_info
-                                print(f"    L/R time constant: {timing['time_constant']*1000:.1f} ms")
-                                print(f"    Charge time needed: {timing['charge_time_needed']*1000:.1f} ms")
-                                print(f"    Switch-on delay: {timing['switch_on_time']*1000:.1f} ms")
-                                print(f"    Switch-off time: {timing['switch_off_time']*1000:.1f} ms")
+                    # Timing optimization removed - stages run independently
                     
                     stage_results = stage_sim.run_simulation(save_data=save_data, verbose=verbose, show_progress=show_progress)
                     
@@ -2601,48 +2307,9 @@ def main():
             print("Detected single-stage configuration")
             sim = CoilgunSimulation(config_file)
             
-            # ENHANCED: Check physics integration status for single-stage simulations
-            print("\n" + "="*50)
-            print("CHECKING ENHANCED PHYSICS INTEGRATION")
-            print("="*50)
+            # ENHANCED: Check physics integration status for single-stage simulations (silent)
             physics_status = sim.check_physics_integration()
-            
-            # ENHANCED: Optimize physics settings for this simulation
-            print("\n" + "="*50)
-            print("OPTIMIZING PHYSICS ENGINE SETTINGS")
-            print("="*50)
             optimization_status = sim.optimize_physics_settings()
-            
-            # Provide recommendations based on physics integration
-            total_features = len(physics_status)
-            enabled_features = sum(1 for status in physics_status.values() if status)
-            integration_quality = enabled_features / total_features
-            
-            if integration_quality >= 0.85:
-                print(f"\n✓ Excellent physics integration ({enabled_features}/{total_features} features)")
-                print("  All major advanced physics features are available")
-            elif integration_quality >= 0.70:
-                print(f"\n✓ Good physics integration ({enabled_features}/{total_features} features)")
-                print("  Most advanced physics features are available")
-            elif integration_quality >= 0.50:
-                print(f"\n⚠ Moderate physics integration ({enabled_features}/{total_features} features)")
-                print("  Some advanced physics features may be missing")
-            else:
-                print(f"\n⚠ Limited physics integration ({enabled_features}/{total_features} features)")
-                print("  Consider updating physics engine for better accuracy")
-            
-            # Additional physics validation
-            if hasattr(sim.physics, 'validate_configuration'):
-                try:
-                    sim.physics.validate_configuration()
-                    print("  ✓ Physics engine configuration validation passed")
-                except Exception as e:
-                    print(f"  ⚠ Physics configuration validation failed: {e}")
-            
-            # Run simulation with enhanced physics
-            print("\n" + "="*50)
-            print("RUNNING ENHANCED COILGUN SIMULATION")
-            print("="*50)
             results = sim.run_simulation(save_data=True, verbose=True, show_progress=True, check_physics=True)
             
             # Create output directory based on config filename

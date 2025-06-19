@@ -15,7 +15,6 @@ ENHANCED with PhD-level accuracy and complete electromagnetic physics:
 - Frequency-dependent resistance and permeability
 - Hysteresis memory effects and B-H curve tracking
 - Energy conservation validation and error bounds assessment
-- Multi-stage timing optimization with pre-charge logic
 """
 
 import numpy as np
@@ -29,6 +28,7 @@ import json
 import warnings
 import os
 import time
+import traceback
 
 class CoilgunPhysicsEngine:
     """
@@ -83,8 +83,8 @@ class CoilgunPhysicsEngine:
         # Note: Dynamic inductance calculation used instead of precomputed tables
         # for current-dependent saturation effects
         
-        # Initialize timing optimization parameters
-        self._initialize_timing_optimization()
+        # Initialize physics parameters (timing optimization removed)
+        self._initialize_physics_parameters()
         
         # Initialize energy tracking for conservation analysis
         self._initialize_energy_tracking()
@@ -111,98 +111,22 @@ class CoilgunPhysicsEngine:
             print("WARNING: Relative permeability less than 1 (diamagnetic or special material)")
             print("         This may be valid for diamagnetic materials or specialized applications")
     
-    def _initialize_timing_optimization(self):
+    def _initialize_physics_parameters(self):
         """
-        Initialize timing optimization parameters for multi-stage operation.
+        Initialize physics parameters without timing optimization.
         """
-        # Timing optimization parameters
-        self.timing_config = self.config.get('timing_optimization', {})
-        self.enable_timing_optimization = self.timing_config.get('enabled', True)
-        self.pre_charge_enabled = self.timing_config.get('pre_charge', True)
-        self.optimal_force_timing = self.timing_config.get('optimal_force_timing', True)
-        
-        # Projectile velocity from previous stage (for multi-stage)
-        self.previous_stage_velocity = self.initial_velocity
-        
-        # Timing calculation parameters
-        self.coil_charge_time_factor = self.timing_config.get('charge_time_factor', 3.0)  # Multiples of L/R
-        self.optimal_force_position = self.timing_config.get('optimal_force_position', 0.3)  # Fraction of coil length
-        self.turn_off_position = self.timing_config.get('turn_off_position', 0.7)  # Fraction of coil length
-        
-        # Pre-charge timing
-        self.pre_charge_start_time = 0.0
-        self.coil_switch_on_time = 0.0
-        self.coil_switch_off_time = np.inf
-        
-        # Compute timing if this is a subsequent stage
-        if self.previous_stage_velocity > 0:
-            self._compute_optimal_timing()
+        # Remove timing optimization - physics engine focuses purely on electromagnetic calculations
+        pass
     
     def set_previous_stage_velocity(self, velocity):
         """
-        Set the velocity from the previous stage for timing optimization.
+        Set the velocity from the previous stage for multi-stage simulations.
         
         Args:
             velocity: Final velocity from previous stage (m/s)
         """
+        # Store velocity for data continuity between stages, but remove timing optimization
         self.previous_stage_velocity = velocity
-        if self.enable_timing_optimization and velocity > 0:
-            self._compute_optimal_timing()
-    
-    def _compute_optimal_timing(self):
-        """
-        Compute optimal timing for coil activation based on projectile velocity.
-        """
-        if not self.enable_timing_optimization or self.previous_stage_velocity <= 0:
-            return
-        
-        # Calculate L/R time constant for current buildup
-        # Estimate maximum inductance (projectile fully inside coil)
-        max_inductance = self.inductance_with_ferromagnetic_core(self.coil_length/2)
-        time_constant = max_inductance / self.total_resistance
-        
-        # Time needed for current to reach useful levels
-        charge_time_needed = self.coil_charge_time_factor * time_constant
-        
-        # Distance from initial position to optimal force position
-        optimal_position = self.optimal_force_position * self.coil_length
-        travel_distance = optimal_position - self.initial_position
-        
-        # Time for projectile to reach optimal position
-        if self.previous_stage_velocity > 0:
-            travel_time = travel_distance / self.previous_stage_velocity
-        else:
-            travel_time = np.inf
-        
-        # Pre-charge timing: start charging before projectile arrives
-        if self.pre_charge_enabled and travel_time > charge_time_needed:
-            self.pre_charge_start_time = max(0, travel_time - charge_time_needed)
-            self.coil_switch_on_time = self.pre_charge_start_time
-        else:
-            # If not enough time for pre-charge, start immediately
-            self.pre_charge_start_time = 0.0
-            self.coil_switch_on_time = 0.0
-        
-        # Turn-off timing: when projectile reaches turn-off position
-        turn_off_position = self.turn_off_position * self.coil_length
-        turn_off_distance = turn_off_position - self.initial_position
-        
-        if self.previous_stage_velocity > 0:
-            self.coil_switch_off_time = turn_off_distance / self.previous_stage_velocity
-        else:
-            self.coil_switch_off_time = np.inf
-        
-        # Store timing info for diagnostics
-        self.timing_info = {
-            'time_constant': time_constant,
-            'charge_time_needed': charge_time_needed,
-            'travel_time_to_optimal': travel_time,
-            'pre_charge_start': self.pre_charge_start_time,
-            'switch_on_time': self.coil_switch_on_time,
-            'switch_off_time': self.coil_switch_off_time,
-            'optimal_position': optimal_position,
-            'turn_off_position': turn_off_position
-        }
     
     def _load_materials_data(self):
         """Load materials data from JSON file"""
@@ -460,7 +384,7 @@ class CoilgunPhysicsEngine:
         """
         Calculate magnetic field on axis of finite solenoid using CORRECTED analytic formula.
         
-        CORRECTED to use turn density n = N/ℓ instead of total turns N:
+        FIXED: Restored the missing ½ factor from Smythe §7.07:
         B_z = (μ₀nI/2) * [(z₂/√(a²+z₂²)) - (z₁/√(a²+z₁²))]
         where n = N/ℓ is the turn density, z₁ = z - ℓ/2, z₂ = z + ℓ/2
         
@@ -484,7 +408,7 @@ class CoilgunPhysicsEngine:
         if abs(current) < self.CURRENT_EPSILON:
             return 0.0
         
-        # CORRECTED: Use turn density n = N/ℓ instead of total turns N
+        # Use turn density n = N/ℓ 
         n = N / l if l > 0 else 0  # Turn density (turns per meter)
         
         # Calculate z₁ and z₂ relative to coil center
@@ -498,9 +422,9 @@ class CoilgunPhysicsEngine:
         if denom1 < 1e-15 or denom2 < 1e-15:
             return 0.0
         
-        # CORRECTED analytic formula for on-axis field of finite solenoid
-        # B_z = μ₀nI * geometric factor, where n = N/ℓ (removed erroneous ½ factor)
-        B_z = (self.mu0 * n * current) * (z2/denom2 - z1/denom1)
+        # FIXED: Restored the missing ½ factor (Smythe §7.07)
+        # B_z = (μ₀nI/2) * geometric factor, where n = N/ℓ
+        B_z = (self.mu0 * n * current / 2.0) * (z2/denom2 - z1/denom1)
         
         # Apply numerical safety to output
         B_z = self._safe_numerical_operation(B_z, "magnetic_field", self.MAX_FIELD)
@@ -582,17 +506,16 @@ class CoilgunPhysicsEngine:
         # Start with air-core inductance
         L_air = self.solenoid_inductance_air_core()
         
-        # Calculate overlap between projectile and coil
-        overlap_start = max(0, projectile_position)
-        overlap_end = min(self.coil_length, projectile_position + self.proj_length)
-        overlap_length = max(0, overlap_end - overlap_start)
+        # Use the CONSISTENT overlap calculation from _calculate_overlap_fraction
+        # This ensures the same physics everywhere
+        overlap_fraction = self._calculate_overlap_fraction(projectile_position)
         
         # If no overlap, return air-core inductance
-        if overlap_length <= 0:
+        if overlap_fraction <= 0:
             return L_air
-            
-        # Overlap fraction (0 to 1)
-        overlap_fraction = overlap_length / self.coil_length
+        
+        # Calculate overlap length from the fraction
+        overlap_length = overlap_fraction * self.coil_length
         
         # Geometric coupling factor - how well the projectile fills the coil
         # Based on cross-sectional area ratio
@@ -1268,18 +1191,7 @@ class CoilgunPhysicsEngine:
             print(f"  Reversible fraction: {getattr(self, 'ja_c', 0):.3f}")
             print(f"  Pinning parameter: {getattr(self, 'ja_k', 0):.0f} A/m")
         
-        # Print timing optimization info if available
-        if (hasattr(self, 'enable_timing_optimization') and self.enable_timing_optimization and 
-            hasattr(self, 'timing_info') and self.previous_stage_velocity > 0):
-            print(f"\nTiming Optimization:")
-            print(f"  Previous stage velocity: {self.previous_stage_velocity:.1f} m/s")
-            print(f"  L/R time constant: {self.timing_info['time_constant']*1000:.1f} ms")
-            print(f"  Charge time needed: {self.timing_info['charge_time_needed']*1000:.1f} ms")
-            print(f"  Pre-charge start: {self.timing_info['pre_charge_start']*1000:.1f} ms")
-            print(f"  Switch on time: {self.timing_info['switch_on_time']*1000:.1f} ms")
-            print(f"  Switch off time: {self.timing_info['switch_off_time']*1000:.1f} ms")
-            print(f"  Optimal force position: {self.timing_info['optimal_position']*1000:.1f} mm")
-            print(f"  Turn-off position: {self.timing_info['turn_off_position']*1000:.1f} mm")
+        # Timing optimization removed
 
         print(f"\n" + "=" * 65)
     
@@ -1293,20 +1205,8 @@ class CoilgunPhysicsEngine:
             tuple: (force, eddy_power_loss) - Force in Newtons and eddy power loss in Watts
         """
         # Check if coil should be turned off based on position and current
-        if hasattr(self, 'get_coil_driving_voltage'):
-            voltage_multiplier = self.get_coil_driving_voltage(time) if time is not None else 1.0
-        else:
-            voltage_multiplier = 1.0
-        
-        if hasattr(self, 'should_turn_off_coil'):
-            should_turn_off = self.should_turn_off_coil(position, current, time)
-        else:
-            # Simple position-based turn-off
-            turn_off_pos = getattr(self, 'turn_off_position', 0.7) * self.coil_length
-            should_turn_off = position >= turn_off_pos or current < 0
-        
-        if should_turn_off or voltage_multiplier == 0.0:
-            return 0.0, 0.0
+        # Timing optimization removed - coils operate at full voltage without position-based turn-off
+        # Calculate force with full current (no timing control)
         
         # Range check
         z_min = -0.05  # 5cm before coil start
@@ -1328,44 +1228,7 @@ class CoilgunPhysicsEngine:
         
         return force, eddy_power_loss
     
-    def should_turn_off_coil(self, position, current, time=None):
-        """Determine if coil should be turned off to avoid suck-back."""
-        # Timing-based turn-off
-        if (hasattr(self, 'enable_timing_optimization') and self.enable_timing_optimization and 
-            time is not None and hasattr(self, 'coil_switch_off_time')):
-            if time >= self.coil_switch_off_time:
-                return True
-        
-        # Position-based turn-off
-        turn_off_pos = getattr(self, 'turn_off_position', 0.7) * self.coil_length
-        if position >= turn_off_pos:
-            return True
-        
-        # Current reversal
-        if current < 0:
-            return True
-        
-        return False
-    
-    def should_turn_on_coil(self, time=None):
-        """Determine if coil should be turned on based on timing optimization."""
-        if not hasattr(self, 'enable_timing_optimization') or not self.enable_timing_optimization or time is None:
-            return True
-        
-        return time >= getattr(self, 'coil_switch_on_time', 0)
-    
-    def get_coil_driving_voltage(self, time=None):
-        """Get the effective driving voltage considering timing optimization."""
-        if not hasattr(self, 'enable_timing_optimization') or not self.enable_timing_optimization or time is None:
-            return 1.0
-        
-        if not self.should_turn_on_coil(time):
-            return 0.0
-        
-        if hasattr(self, 'coil_switch_off_time') and time >= self.coil_switch_off_time:
-            return 0.0
-        
-        return 1.0
+    # Timing control methods removed - coils operate at full voltage throughout simulation
     
     def calculate_efficiency(self, final_velocity):
         """Calculate energy conversion efficiency."""
@@ -1464,6 +1327,7 @@ class CoilgunPhysicsEngine:
         self.energy_ledger = {
             'E_I2R_coil': 0.0,
             'E_eddy_losses': 0.0,
+            'E_inductance_work': 0.0,  # ADDED: Track work done during inductance changes
             'E_kinetic_final': 0.0,
             'E_magnetic_stored': 0.0,
             'E_initial_capacitor': self.initial_energy
@@ -1564,8 +1428,25 @@ class CoilgunPhysicsEngine:
         V_C = Q / max(self.capacitance, self.MIN_CAPACITANCE)
         V_C = self._safe_numerical_operation(V_C, "capacitor_voltage", self.MAX_VOLTAGE)
         
-        # Apply timing optimization logic if enabled
-        voltage_multiplier = self.get_coil_driving_voltage(t) if hasattr(self, 'get_coil_driving_voltage') else 1.0
+        # Ensure scalar values for early calculations
+        def to_scalar(val):
+            """Convert any numerical type to scalar float."""
+            if isinstance(val, (list, tuple)):
+                return float(val[0]) if len(val) > 0 else 0.0
+            elif isinstance(val, np.ndarray):
+                return float(val.flat[0]) if val.size > 0 else 0.0
+            else:
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return 0.0
+        
+        I_scalar = to_scalar(I)
+        x_scalar = to_scalar(x)
+        v_scalar = to_scalar(v)
+        
+        # Timing optimization removed - operate at full voltage
+        voltage_multiplier = 1.0
         voltage_multiplier = self._safe_numerical_operation(voltage_multiplier, "voltage_multiplier", 2.0)
         
         effective_voltage = self._safe_multiply(V_C, voltage_multiplier, "effective_voltage")
@@ -1643,22 +1524,7 @@ class CoilgunPhysicsEngine:
             dI_dt = 0
             
         # Enhanced magnetic force calculation using advanced physics
-        # Ensure scalar values for force calculation
-        def to_scalar(val):
-            """Convert any numerical type to scalar float."""
-            if isinstance(val, (list, tuple)):
-                return float(val[0]) if len(val) > 0 else 0.0
-            elif isinstance(val, np.ndarray):
-                return float(val.flat[0]) if val.size > 0 else 0.0
-            else:
-                try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    return 0.0
-        
-        I_scalar = to_scalar(I)
-        x_scalar = to_scalar(x)
-        v_scalar = to_scalar(v)
+        # Scalar values already calculated above
         
         if hasattr(self, 'magnetic_force_with_circuit_logic'):
             F_mag, eddy_power_loss = self.magnetic_force_with_circuit_logic(I_scalar, x_scalar, t, v_scalar)
@@ -1694,17 +1560,28 @@ class CoilgunPhysicsEngine:
                 P_resistive = I_scalar**2 * max(current_total_resistance, self.MIN_RESISTANCE)
                 P_eddy = eddy_power_loss
                 
+                # CRITICAL FIX: Add missing dL/dt work term for energy conservation
+                # During inductance changes, work is done: P_inductance = I * v * dL/dx
+                P_inductance_work = I_scalar * v_scalar * dL_dx
+                
+                # Initialize inductance work ledger if not present
+                if 'E_inductance_work' not in self.energy_ledger:
+                    self.energy_ledger['E_inductance_work'] = 0.0
+                
                 # Update energy ledger using real time step
                 self.energy_ledger['E_I2R_coil'] += P_resistive * dt_real
                 self.energy_ledger['E_eddy_losses'] += P_eddy * dt_real
+                self.energy_ledger['E_inductance_work'] += P_inductance_work * dt_real
             
             # Always update instantaneous energy values
             self.energy_ledger['E_kinetic_final'] = E_kin
             self.energy_ledger['E_magnetic_stored'] = E_mag
             
-            # Check energy conservation
+            # Check energy conservation including inductance work term
             E_total = E_cap + E_mag + E_kin
-            E_losses = self.energy_ledger['E_I2R_coil'] + self.energy_ledger['E_eddy_losses']
+            E_losses = (self.energy_ledger['E_I2R_coil'] + 
+                       self.energy_ledger['E_eddy_losses'] + 
+                       self.energy_ledger.get('E_inductance_work', 0.0))
             E_initial = self.energy_ledger['E_initial_capacitor']
             
             energy_error = abs(E_total + E_losses - E_initial) / E_initial
