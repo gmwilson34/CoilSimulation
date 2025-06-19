@@ -580,8 +580,8 @@ class CoilgunSimulation:
             return y[2] - self.physics.coil_center
         
         def projectile_exits_coil(t, y):
-            """Event: projectile completely exits coil."""
-            return y[2] - (self.physics.coil_length + self.physics.proj_length)
+            """Event: projectile front face exits coil (simplified exit condition)."""
+            return y[2] - self.physics.coil_length
         
         def current_reverses(t, y):
             """Event: current reverses direction."""
@@ -602,23 +602,24 @@ class CoilgunSimulation:
         try:
             # Solve the ODE system
             if verbose:
-                print(f"Integrating ODEs with {method} method...")
+                print(f"Integrating ODEs with Radau method (optimized for energy conservation)...")
                 if show_progress:
                     print("Integration progress will be shown below:")
             
+            # FIXED: Back to Radau with proper energy tracking in circuit_derivatives
             solution = solve_ivp(
                 fun=ode_func,
                 t_span=t_span,
                 y0=y0,
-                method=method,
-                max_step=max_step,
-                rtol=tolerance,
-                atol=tolerance * 1e-3,
+                method="Radau",   # FIXED: Radau is better for stiff systems, energy tracking moved to derivatives
+                max_step=5e-5,    # FIXED: Set max_step as recommended in punch-list
+                rtol=1e-6,        # FIXED: Tighter tolerances for better accuracy
+                atol=1e-8,
                 events=events,
                 dense_output=True,
                 t_eval=t_eval_points,  # Force evaluation at regular intervals for progress tracking
                 # Add numerical stability options
-                first_step=max_step * 0.1,  # Conservative first step
+                first_step=5e-6,  # Conservative first step (1/10 of max_step)
             )
             
             if not solution.success:

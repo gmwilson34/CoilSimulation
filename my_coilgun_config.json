@@ -2,7 +2,7 @@
     "coil": {
         "inner_diameter": 0.055,
         "length": 0.064,
-        "wire_gauge_awg": "16",
+        "wire_gauge_awg": "8",
         "num_layers": 4,
         "wire_material": "Copper",
         "insulation_thickness": 3e-05,
@@ -12,7 +12,7 @@
         "diameter": 0.0508,
         "length": 0.064,
         "material": "Pure_Iron",
-        "initial_position": 0.01,
+        "initial_position": 0.0,
         "initial_velocity": 0.0
     },
     "capacitor": {
@@ -43,14 +43,14 @@
         "radial_discretization": 100,
         "include_saturation": false,
         "include_hysteresis": false,
-        "include_eddy_currents": true,
-        "include_skin_effect": true,
+        "include_eddy_currents": false,
+        "include_skin_effect": false,
         "include_temperature_effects": false,
         "include_displacement_current": false,
         "force_components": {
             "reluctance_force": true,
-            "lorentz_force": true,
-            "maxwell_stress": true,
+            "lorentz_force": false,
+            "maxwell_stress": false,
             "image_force": false,
             "eddy_force": false
         }
