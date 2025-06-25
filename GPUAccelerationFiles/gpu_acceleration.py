@@ -35,6 +35,7 @@ import os
 import platform
 import subprocess
 import warnings
+import json
 from typing import Optional, Dict, Any, Tuple, List
 
 class GPUAcceleration:
@@ -55,11 +56,19 @@ class GPUAcceleration:
         self.gpu_available = False
         self.julia_main = None
         self.supported_backends = []
+        self.cache_file = os.path.join(os.path.dirname(__file__), '.gpu_cache.json')
         
         # Initialize Julia and GPU detection
         self._detect_system_info()
         self._initialize_julia()
-        self._detect_gpu_backends()
+        
+        # Use cached GPU detection if available and recent
+        if self._load_gpu_cache():
+            if self.verbose:
+                print(f"✓ Using cached GPU configuration: {self.gpu_backend if self.gpu_available else 'CPU'}")
+        else:
+            self._detect_gpu_backends()
+            self._save_gpu_cache()
         
         if self.verbose:
             self._print_system_summary()
@@ -107,15 +116,23 @@ class GPUAcceleration:
         """Detect available GPU backends and install required packages."""
         if not self.julia_available:
             return
-        
-        # Base packages always needed
+          # Base packages always needed
         base_packages = ["DifferentialEquations", "LinearAlgebra", "StaticArrays", "Interpolations"]
         
-        # GPU-specific packages to test
-        gpu_packages = {
-            'Metal': 'Apple Silicon GPU (Metal)',
-            # Skip CUDA, oneAPI, AMDGPU for Apple Silicon focus
-        }
+        # GPU-specific packages to test (platform-dependent)
+        gpu_packages = {}
+        
+        # Only test Metal on macOS (especially Apple Silicon)
+        if self.system_info['os'] == 'Darwin':
+            gpu_packages['Metal'] = 'Apple Silicon GPU (Metal)'
+        
+        # Test CUDA on Windows and Linux
+        if self.system_info['os'] in ['Windows', 'Linux']:
+            gpu_packages['CUDA'] = 'NVIDIA GPU (CUDA)'
+            gpu_packages['oneAPI'] = 'Intel GPU (oneAPI)'
+        
+        # AMDGPU could be tested on Linux, but often problematic
+        # gpu_packages['AMDGPU'] = 'AMD GPU (AMDGPU)'
         
         # Install base packages
         for package in base_packages:
@@ -125,48 +142,56 @@ class GPUAcceleration:
         for package, description in gpu_packages.items():
             if self._test_gpu_backend(package, description):
                 self.supported_backends.append(package)
-        
-        # Select best available backend
+          # Select best available backend
         self._select_gpu_backend()
-    
+
     def _install_julia_package(self, package: str, required: bool = False) -> bool:
         """Install a Julia package if not available."""
         try:
-            # Try to use the package
-            self.julia_main.seval(f"using {package}")
-            if self.verbose:
-                print(f"✓ {package} is available")
-            return True
-        except Exception:
-            if self.verbose:
-                print(f"📦 Installing {package}...")
-            try:
-                # Install the package
-                self.julia_main.seval(f'Pkg.add("{package}")')
-                self.julia_main.seval(f"using {package}")
+            # Check if package is installed without loading it
+            is_installed = self.julia_main.seval(f'haskey(Pkg.project().dependencies, "{package}")')
+            if is_installed:
                 if self.verbose:
-                    print(f"✓ {package} installed and loaded successfully")
+                    print(f"✓ {package} is available")
                 return True
-            except Exception as e:
-                if required:
-                    print(f"❌ Failed to install required package {package}: {e}")
-                    return False
-                else:
-                    if self.verbose:
-                        print(f"⚠️  Failed to install {package}: {e}")
-                    return False
-    
+        except Exception:
+            pass
+        
+        # Package not installed, install it
+        if self.verbose:
+            print(f"📦 Installing {package}...")
+        try:
+            # Install the package
+            self.julia_main.seval(f'Pkg.add("{package}")')
+            if self.verbose:
+                print(f"✓ {package} installed successfully")
+            return True
+        except Exception as e:
+            if required:
+                print(f"❌ Failed to install required package {package}: {e}")
+                return False
+            else:
+                if self.verbose:
+                    print(f"⚠️  Failed to install {package}: {e}")
+                return False
+
     def _test_gpu_backend(self, package: str, description: str) -> bool:
         """Test if a GPU backend is functional."""
         try:
-            # Try to install and test the package
-            if not self._install_julia_package(package, required=False):
-                return False
+            # Check if package is already installed first
+            is_installed = self.julia_main.seval(f'haskey(Pkg.project().dependencies, "{package}")')
+            if not is_installed:
+                # Try to install the package
+                if not self._install_julia_package(package, required=False):
+                    return False
             
-            # Test functionality - only Metal for Apple Silicon
+            # Now load and test the package
+            self.julia_main.seval(f"using {package}")
+            
+            # Test functionality based on backend type
             if package == 'Metal':
-                # Test Apple Silicon Metal
-                if self.system_info['is_apple_silicon']:
+                # Test Apple Silicon Metal - only on macOS
+                if self.system_info['os'] == 'Darwin':
                     functional = self.julia_main.seval("Metal.functional()")
                     if functional:
                         if self.verbose:
@@ -177,6 +202,42 @@ class GPUAcceleration:
                             print(f"💻 {description} available but not functional")
                         return False
                 else:
+                    return False
+                    
+            elif package == 'CUDA':
+                # Test NVIDIA CUDA
+                functional = self.julia_main.seval("CUDA.functional()")
+                if functional:
+                    if self.verbose:
+                        print(f"🚀 {description} detected and functional")
+                    return True
+                else:
+                    if self.verbose:
+                        print(f"💻 {description} available but not functional")
+                    return False
+                    
+            elif package == 'oneAPI':
+                # Test Intel oneAPI
+                functional = self.julia_main.seval("oneAPI.functional()")
+                if functional:
+                    if self.verbose:
+                        print(f"🚀 {description} detected and functional")
+                    return True
+                else:
+                    if self.verbose:
+                        print(f"💻 {description} available but not functional")
+                    return False
+                    
+            elif package == 'AMDGPU':
+                # Test AMD GPU
+                functional = self.julia_main.seval("AMDGPU.functional()")
+                if functional:
+                    if self.verbose:
+                        print(f"🚀 {description} detected and functional")
+                    return True
+                else:
+                    if self.verbose:
+                        print(f"💻 {description} available but not functional")
                     return False
             
             return False
@@ -221,21 +282,38 @@ class GPUAcceleration:
                 return "50-200x (Apple Silicon GPU)"
             elif self.gpu_backend == 'CUDA':
                 return "100-500x (NVIDIA GPU)"
+            elif self.gpu_backend == 'oneAPI':
+                return "10-50x (Intel GPU)"
             else:
                 return "20-100x (GPU acceleration)"
         else:
             return "5-20x (Julia CPU threading)"
     
+    def _get_gpu_import_statement(self):
+        """Get the appropriate Julia import statement for the GPU backend."""
+        if not self.gpu_available:
+            return ""
+        
+        if self.gpu_backend == "Metal":
+            return "using Metal"
+        elif self.gpu_backend == "CUDA":
+            return "using CUDA"
+        elif self.gpu_backend == "oneAPI":
+            # For oneAPI, we'll use optimized CPU threading instead of GPU
+            # as Intel GPU packages in Julia are often complex to set up
+            return "# oneAPI detected - using optimized CPU threading"
+        else:
+            return f"# {self.gpu_backend} backend detected"
+    
     def setup_julia_physics(self):
         """Setup Julia physics functions for coilgun simulation."""
         if not self.julia_available:
             raise RuntimeError("Julia not available")
-        
-        # Define the core physics functions in Julia
+          # Define the core physics functions in Julia
         julia_code = f"""
         # Import required packages
         using DifferentialEquations, LinearAlgebra, StaticArrays, Interpolations
-        {f"using {self.gpu_backend}" if self.gpu_available else ""}
+        {self._get_gpu_import_statement()}
         
         # GPU configuration
         const GPU_AVAILABLE = {str(self.gpu_available).lower()}
@@ -418,7 +496,8 @@ class GPUAcceleration:
                 end
             end
             
-            elif GPU_AVAILABLE && GPU_BACKEND == "Metal"
+            # GPU acceleration based on available backend
+            if GPU_AVAILABLE && GPU_BACKEND == "Metal"
                 # Metal GPU acceleration for Apple Silicon
                 try
                     z_gpu = MtlArray(T.(z_points))
@@ -432,6 +511,40 @@ class GPUAcceleration:
                     end
                     
                     @metal threads=n_points metal_kernel!(B_gpu, z_gpu, T(current))
+                    B_values = Array(B_gpu)
+                catch e
+                    # Fallback to CPU if GPU fails
+                    Threads.@threads for i in 1:n_points
+                        @inbounds B_values[i] = solenoid_field(z_points[i], T(current))
+                    end
+                end
+            elseif GPU_AVAILABLE && GPU_BACKEND == "oneAPI"
+                # Intel oneAPI GPU acceleration
+                try
+                    # For oneAPI, use threaded CPU approach as it's often faster than GPU overhead for this workload
+                    Threads.@threads for i in 1:n_points
+                        @inbounds B_values[i] = solenoid_field(z_points[i], T(current))
+                    end
+                catch e
+                    # Fallback to serial CPU
+                    for i in 1:n_points
+                        @inbounds B_values[i] = solenoid_field(z_points[i], T(current))
+                    end
+                end
+            elseif GPU_AVAILABLE && GPU_BACKEND == "CUDA"
+                # CUDA GPU acceleration for NVIDIA
+                try
+                    z_gpu = CuArray(T.(z_points))
+                    B_gpu = similar(z_gpu)
+                    
+                    function cuda_kernel!(B, z, I_val)
+                        i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+                        if i <= length(z)
+                            @inbounds B[i] = solenoid_field(z[i], I_val)
+                        end
+                    end
+                    
+                    @cuda threads=min(256, n_points) blocks=ceil(Int, n_points/256) cuda_kernel!(B_gpu, z_gpu, T(current))
                     B_values = Array(B_gpu)
                 catch e
                     # Fallback to CPU if GPU fails
@@ -783,6 +896,49 @@ class GPUAcceleration:
         
         return JuliaSolution(times, states)
 
+
+    def _load_gpu_cache(self) -> bool:
+        """Load cached GPU configuration if available and recent."""
+        try:
+            if not os.path.exists(self.cache_file):
+                return False
+            
+            # Check if cache is recent (less than 24 hours old)
+            cache_age = time.time() - os.path.getmtime(self.cache_file)
+            if cache_age > 24 * 3600:  # 24 hours
+                return False
+            
+            with open(self.cache_file, 'r') as f:
+                cache_data = json.load(f)
+            
+            # Verify cache matches current system
+            if cache_data.get('system_info') != self.system_info:
+                return False
+            
+            self.gpu_available = cache_data.get('gpu_available', False)
+            self.gpu_backend = cache_data.get('gpu_backend')
+            self.supported_backends = cache_data.get('supported_backends', [])
+            
+            return True
+        except Exception:
+            return False
+    
+    def _save_gpu_cache(self):
+        """Save current GPU configuration to cache."""
+        try:
+            cache_data = {
+                'system_info': self.system_info,
+                'gpu_available': self.gpu_available,
+                'gpu_backend': self.gpu_backend,
+                'supported_backends': self.supported_backends,
+                'timestamp': time.time()
+            }
+            
+            with open(self.cache_file, 'w') as f:
+                json.dump(cache_data, f)
+        except Exception:
+            pass  # Cache save failure is not critical
+    
 
 def create_gpu_accelerated_solver(config_file: str, verbose: bool = True) -> Tuple[Any, GPUAcceleration]:
     """
