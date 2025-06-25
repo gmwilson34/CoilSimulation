@@ -811,6 +811,76 @@ def create_configuration() -> Dict[str, Any]:
         return create_single_stage_configuration(materials)
 
 
+def create_test_single_stage_config(multi_stage_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a test single-stage configuration from a multi-stage configuration
+    for validation purposes.
+    
+    Args:
+        multi_stage_config: Multi-stage configuration dictionary
+        
+    Returns:
+        Single-stage configuration dictionary that can be used by physics engine
+    """
+    if not multi_stage_config.get("multi_stage", {}).get("enabled", False):
+        # Already single-stage
+        return multi_stage_config
+    
+    # Create single-stage config from first stage
+    test_config = {}
+    
+    # Copy shared settings to top level
+    shared = multi_stage_config.get("shared", {})
+    for key, value in shared.items():
+        test_config[key] = value
+    
+    # Get first stage configuration
+    stages = multi_stage_config.get("stages", [])
+    if stages:
+        first_stage = stages[0]
+        # Copy stage-specific settings to top level
+        for key, value in first_stage.items():
+            if key not in ["stage_id", "group_id"]:
+                test_config[key] = value
+    
+    return test_config
+
+
+def create_test_single_stage_config(multi_stage_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a test single-stage configuration from a multi-stage configuration
+    for validation purposes.
+    
+    Args:
+        multi_stage_config: Multi-stage configuration dictionary
+        
+    Returns:
+        Single-stage configuration dictionary that can be used by physics engine
+    """
+    if not multi_stage_config.get("multi_stage", {}).get("enabled", False):
+        # Already single-stage
+        return multi_stage_config
+    
+    # Create single-stage config from first stage
+    test_config = {}
+    
+    # Copy shared settings to top level
+    shared = multi_stage_config.get("shared", {})
+    for key, value in shared.items():
+        test_config[key] = value
+    
+    # Get first stage configuration
+    stages = multi_stage_config.get("stages", [])
+    if stages:
+        first_stage = stages[0]
+        # Copy stage-specific settings to top level
+        for key, value in first_stage.items():
+            if key not in ["stage_id", "group_id"]:
+                test_config[key] = value
+    
+    return test_config
+
+
 def validate_configuration(config: Dict[str, Any]) -> bool:
     """Validate configuration for physics engine compatibility"""
     print("\n" + "="*50)
@@ -913,29 +983,38 @@ def validate_configuration(config: Dict[str, Any]) -> bool:
     return valid
 
 
-def save_configuration(config: Dict[str, Any], filename: str) -> None:
+def save_configuration(config: Dict[str, Any], filename: str) -> bool:
     """Save configuration to JSON file with validation"""
     try:
         # Validate configuration before saving
         if not validate_configuration(config):
             if not get_yes_no_input("\nConfiguration has validation errors. Save anyway?", default=False):
-                print("Configuration not saved.")
-                return
+                print("❌ Configuration not saved.")
+                return False
+        
+        # Get absolute path for clarity
+        full_path = os.path.abspath(filename)
         
         with open(filename, 'w') as f:
             json.dump(config, f, indent=4)
-        print(f"\nConfiguration saved to: {filename}")
+        
+        print(f"Full path: {full_path}")
+        print(f"Filename: {filename}")
         
         # Test load the configuration
         try:
             with open(filename, 'r') as f:
                 test_config = json.load(f)
             print("✓ Configuration file is valid JSON and can be loaded.")
+            return True
         except Exception as e:
             print(f"⚠  Warning: Saved file may have issues: {e}")
+            return True  # File was saved, but has issues
             
     except Exception as e:
         print(f"Error saving configuration: {e}")
+        print(f"Attempted to save to: {os.path.abspath(filename)}")
+        return False
 
 
 def print_configuration_summary(config: Dict[str, Any]) -> None:
@@ -1031,7 +1110,12 @@ def main():
             filename += '.json'
         
         # Save configuration
-        save_configuration(config, filename)
+        save_success = save_configuration(config, filename)
+        
+        if not save_success:
+            print(f"\nConfiguration setup failed!")
+            print(f"The configuration file could not be saved.")
+            return
         
         # Display summary
         print_configuration_summary(config)
@@ -1079,39 +1163,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nUnhandled error: {e}")
         sys.exit(1)
-
-
-def create_test_single_stage_config(multi_stage_config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Create a test single-stage configuration from a multi-stage configuration
-    for validation purposes.
-    
-    Args:
-        multi_stage_config: Multi-stage configuration dictionary
         
-    Returns:
-        Single-stage configuration dictionary that can be used by physics engine
-    """
-    if not multi_stage_config.get("multi_stage", {}).get("enabled", False):
-        # Already single-stage
-        return multi_stage_config
-    
-    # Create single-stage config from first stage
-    test_config = {}
-    
-    # Copy shared settings to top level
-    shared = multi_stage_config.get("shared", {})
-    for key, value in shared.items():
-        test_config[key] = value
-    
-    # Get first stage configuration
-    stages = multi_stage_config.get("stages", [])
-    if stages:
-        first_stage = stages[0]
-        # Copy stage-specific settings to top level
-        for key, value in first_stage.items():
-            if key not in ["stage_id", "group_id"]:
-                test_config[key] = value
-    
-    return test_config
-
