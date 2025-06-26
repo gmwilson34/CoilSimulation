@@ -281,7 +281,7 @@ def build_config_dict(params, materials, wire_spec, fast_mode=False):
         tolerance = 1e-8  # Less strict tolerance
         axial_disc = min(500, params.get("axial_discretization", 1000))  # Reduced discretization
         radial_disc = min(50, params.get("radial_discretization", 100))
-        method = "RK23"  # Faster but less accurate method
+        method = "RK45"  # Faster but less accurate method
     else:
         # High accuracy for final results
         max_step = 1e-6
@@ -848,7 +848,7 @@ def quick_feasibility_filter(params, wire_spec, target_velocity):
     if voltage > 1500:  # Extremely high voltage threshold
         return False, "voltage_extreme"
     
-    if wire_gauge >= 22 and turns > 200:  # Very thin wire + many turns
+    if wire_gauge >= 20 and turns > 200:  # Very thin wire + many turns
         return False, "wire_too_thin"
     
     if layers > 15:  # Too many layers
