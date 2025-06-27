@@ -1218,22 +1218,52 @@ def optimize_coilgun(params, materials, wire_spec, target_velocity, total_combin
         results_list = interrupt_handler.results_list
         progress_count = interrupt_handler.progress_count
         
-        print(f"\nOptimization interrupted after {progress_count} combinations.")
-        print("Saving current progress...")
+        try:
+            print(f"\nOptimization interrupted after {progress_count} combinations.")
+            print("Saving current progress...")
+        except:
+            # If print fails, try writing to stderr directly
+            try:
+                sys.__stderr__.write(f"\nOptimization interrupted after {progress_count} combinations.\n")
+                sys.__stderr__.write("Saving current progress...\n")
+                sys.__stderr__.flush()
+            except:
+                pass
         
         # Save partial results immediately
         if results_list:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             partial_csv_filename = f"partial_optimization_results_{timestamp}.csv"
             save_results_to_csv(results_list, partial_csv_filename)
-            print(f"Partial results saved to: {partial_csv_filename}")
+            try:
+                print(f"Partial results saved to: {partial_csv_filename}")
+            except:
+                try:
+                    sys.__stderr__.write(f"Partial results saved to: {partial_csv_filename}\n")
+                    sys.__stderr__.flush()
+                except:
+                    pass
             
             if best_config:
                 partial_config_filename = f"partial_best_config_{timestamp}.json"
                 save_best_config_to_json(best_config, partial_config_filename, materials, wire_spec)
-                print(f"Best configuration saved to: {partial_config_filename}")
+                try:
+                    print(f"Best configuration saved to: {partial_config_filename}")
+                except:
+                    try:
+                        sys.__stderr__.write(f"Best configuration saved to: {partial_config_filename}\n")
+                        sys.__stderr__.flush()
+                    except:
+                        pass
         else:
-            print("No valid configurations found before interruption.")
+            try:
+                print("No valid configurations found before interruption.")
+            except:
+                try:
+                    sys.__stderr__.write("No valid configurations found before interruption.\n")
+                    sys.__stderr__.flush()
+                except:
+                    pass
     
     finally:
         # Clean up resources
@@ -1465,24 +1495,39 @@ class OptimizationInterrupt:
         # Set up signal handler for Ctrl+C
         self._original_handler = signal.signal(signal.SIGINT, self.signal_handler)
     
+    def _safe_print(self, *args, **kwargs):
+        """Safely print to stderr, handling cases where stdout/stderr might be closed."""
+        try:
+            print(*args, file=sys.__stderr__, **kwargs)
+            sys.__stderr__.flush()
+        except:
+            # If that fails, try writing directly to stderr
+            try:
+                message = ' '.join(str(arg) for arg in args) + '\n'
+                sys.__stderr__.write(message)
+                sys.__stderr__.flush()
+            except:
+                # If all else fails, silently continue
+                pass
+    
     def signal_handler(self, signum, frame):
         """Handle interrupt signal (Ctrl+C)."""
         if self.interrupted:
             # Second Ctrl+C - force exit
-            print("\n\nSecond interrupt detected - forcing exit...")
+            self._safe_print("\n\nSecond interrupt detected - forcing exit...")
             if self._original_handler and self._original_handler != signal.SIG_DFL:
                 signal.signal(signal.SIGINT, self._original_handler)
             else:
                 sys.exit(1)
         
-        print(f"\n\n{'='*50}")
-        print("OPTIMIZATION INTERRUPTED BY USER")
-        print(f"{'='*50}")
-        print(f"Progress: {self.progress_count}/{self.total_combinations} combinations tested")
+        self._safe_print(f"\n\n{'='*50}")
+        self._safe_print("OPTIMIZATION INTERRUPTED BY USER")
+        self._safe_print(f"{'='*50}")
+        self._safe_print(f"Progress: {self.progress_count}/{self.total_combinations} combinations tested")
         if self.progress_count > 0:
             percent = (self.progress_count / self.total_combinations) * 100
-            print(f"Completed: {percent:.1f}% of total optimization")
-        print("Saving current progress... (Press Ctrl+C again to force quit)")
+            self._safe_print(f"Completed: {percent:.1f}% of total optimization")
+        self._safe_print("Saving current progress... (Press Ctrl+C again to force quit)")
         self.interrupted = True
     
     def update_progress(self, best_config, results_list, progress_count, total_combinations):
@@ -1813,7 +1858,14 @@ def cleanup_temp_files():
         
         total_cleaned = files_cleaned + temp_dirs_cleaned
         if total_cleaned > 0:
-            print(f"🧹 Cleaned up {files_cleaned} temporary files and {temp_dirs_cleaned} temporary directories")
+            try:
+                print(f"🧹 Cleaned up {files_cleaned} temporary files and {temp_dirs_cleaned} temporary directories")
+            except:
+                try:
+                    sys.__stderr__.write(f"🧹 Cleaned up {files_cleaned} temporary files and {temp_dirs_cleaned} temporary directories\n")
+                    sys.__stderr__.flush()
+                except:
+                    pass
     except:
         pass
 
