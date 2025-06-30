@@ -1,0 +1,100 @@
+{
+    "coil": {
+        "inner_diameter": 0.055,
+        "length": 0.06,
+        "wire_gauge_awg": 10,
+        "num_layers": 3,
+        "total_turns": 54,
+        "wire_material": "Copper",
+        "packing_factor": 0.9,
+        "insulation_thickness": 3e-05,
+        "thermal_class": "H",
+        "insulation_type": "polyimide"
+    },
+    "projectile": {
+        "diameter": 0.0508,
+        "length": 0.06,
+        "mass": 0.9546368906196856,
+        "material": "Pure_Iron",
+        "initial_position": -0.0075,
+        "initial_velocity": 0.0,
+        "surface_roughness": 1e-09,
+        "hardness": 100
+    },
+    "capacitor": {
+        "capacitance": 0.5,
+        "initial_voltage": 600.0,
+        "esr": 0.01,
+        "esl": 1e-07
+    },
+    "simulation": {
+        "time_span": [
+            0,
+            0.0001
+        ],
+        "max_step": 1e-09,
+        "tolerance": 1e-09,
+        "method": "RK45"
+    },
+    "circuit_model": {
+        "switch_resistance": 0.001,
+        "switch_inductance": 1e-08,
+        "parasitic_capacitance": 1e-11,
+        "include_skin_effect": true,
+        "include_proximity_effect": true
+    },
+    "magnetic_model": {
+        "calculation_method": "finite_solenoid",
+        "axial_discretization": 5000,
+        "radial_discretization": 500,
+        "include_saturation": true,
+        "include_hysteresis": false,
+        "include_eddy_currents": true,
+        "include_skin_effect": true,
+        "accuracy_level": "high",
+        "force_components": {
+            "reluctance_force": true,
+            "lorentz_force": true,
+            "maxwell_stress": false,
+            "image_force": false,
+            "eddy_force": true
+        }
+    },
+    "advanced_physics": {
+        "jiles_atherton": {
+            "enabled": false
+        },
+        "eddy_currents": {
+            "enabled": true,
+            "discretization_method": "adaptive",
+            "skin_depth_calculation": true,
+            "frequency_dependence": true
+        },
+        "thermal": {
+            "enabled": false
+        },
+        "energy_conservation": {
+            "enabled": true,
+            "tolerance": 1e-04,
+            "check_interval": 100
+        }
+    },
+    "solver": {
+        "method": "RK45",
+        "rtol": 1e-06,
+        "atol": 1e-08,
+        "max_step": 5e-05
+    },
+    "output": {
+        "save_trajectory": true,
+        "save_current_profile": true,
+        "save_field_data": true,
+        "print_progress": true,
+        "save_interval": 50
+    },
+    "environment": {
+        "temperature": 293.15,
+        "pressure": 101325,
+        "humidity": 0.5
+    }
+}

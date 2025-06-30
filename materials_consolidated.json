@@ -1,0 +1,398 @@
+{
+    "metadata": {
+        "version": "2.0",
+        "description": "Consolidated material properties database for advanced coilgun physics simulation",
+        "last_updated": "2024-01-15",
+        "temperature_reference": 293.15,
+        "units": {
+            "resistivity": "Ω⋅m",
+            "density": "kg/m³",
+            "thermal_conductivity": "W/(m⋅K)",
+            "specific_heat": "J/(kg⋅K)",
+            "magnetic_field": "T",
+            "magnetic_moment": "Bohr magnetons",
+            "energy": "J/m³",
+            "temperature": "K"
+        }
+    },
+    "physical_constants": {
+        "mu0": 1.2566370614359173e-06,
+        "epsilon0": 8.854187817e-12,
+        "c": 299792458,
+        "e": 1.602176634e-19,
+        "k_B": 1.380649e-23,
+        "N_A": 6.02214076e+23,
+        "h_bar": 1.054571817e-34,
+        "room_temperature": 293.15,
+        "curie_temperature_iron": 1043,
+        "boltzmann_constant": 1.380649e-23,
+        "avogadro_number": 6.02214076e23
+    },
+    "materials": {
+        "Copper": {
+            "description": "High conductivity copper (OFHC) for coil winding",
+            "classification": "conductor",
+            "basic_properties": {
+                "resistivity": 1.68e-08,
+                "resistivity_20C": 1.68e-08,
+                "temperature_coefficient": 0.00393,
+                "density": 8960,
+                "mu_r": 0.999991,
+                "conductivity": 59600000.0,
+                "melting_point": 1357.77,
+                "thermal_conductivity": 401,
+                "specific_heat": 385,
+                "young_modulus": 128000000000.0
+            },
+            "advanced_properties": {
+                "debye_temperature": 343,
+                "fermi_energy": 7.04,
+                "work_function": 4.65,
+                "yield_strength": 70e6,
+                "ultimate_strength": 220e6,
+                "elongation_at_break": 0.6,
+                "skin_effect_params": {
+                    "dc_conductivity": 5.96e7,
+                    "relaxation_time": 2.7e-14,
+                    "plasma_frequency": 1.6e16
+                }
+            },
+            "temperature_dependence": {
+                "enabled": true,
+                "resistivity_formula": "rho(T) = rho_0 * (1 + alpha * (T - T_ref))",
+                "conductivity_formula": "sigma(T) = 1 / rho(T)"
+            }
+        },
+        "Pure_Iron": {
+            "description": "Pure iron (99.99% Fe) - Soft magnetic material for projectiles",
+            "classification": "ferromagnetic",
+            "basic_properties": {
+                "resistivity": 9.71e-08,
+                "resistivity_20C": 9.71e-08,
+                "temperature_coefficient": 0.00651,
+                "density": 7874,
+                "mu_r": 5000,
+                "mu_r_initial": 5000,
+                "mu_r_max": 200000,
+                "saturation_B": 2.16,
+                "coercivity": 80,
+                "melting_point": 1811,
+                "curie_temperature": 1043,
+                "thermal_conductivity": 80.4,
+                "specific_heat": 449,
+                "young_modulus": 211000000000.0
+            },
+            "advanced_properties": {
+                "saturation_M": 1.71e6,
+                "anisotropy_constant_K1": 48000,
+                "exchange_stiffness": 21e-12,
+                "domain_wall_energy": 0.01,
+                "magnetic_moment_per_atom": 2.22,
+                "yield_strength": 130e6,
+                "ultimate_strength": 270e6,
+                "fatigue_limit": 162e6,
+                "fracture_toughness": 80e6,
+                "hardness_hv": 80
+            },
+            "jiles_atherton_params": {
+                "ms": 1.71e6,
+                "a": 1200,
+                "alpha": 1e-3,
+                "c": 0.1,
+                "k": 500
+            },
+            "bh_curve_params": {
+                "temperature_dependence": true,
+                "T_ref": 293.15,
+                "dM_dT": -2.1,
+                "dHc_dT": 0.05
+            },
+            "temperature_dependence": {
+                "enabled": true,
+                "magnetic_saturation_formula": "Ms(T) = Ms_0 * (1 - (T/T_curie)^2)^0.36"
+            }
+        },
+        "Low_Carbon_Steel": {
+            "description": "Low carbon steel (AISI 1018) - Common projectile material",
+            "classification": "ferromagnetic",
+            "basic_properties": {
+                "resistivity": 1.43e-07,
+                "resistivity_20C": 1.43e-07,
+                "temperature_coefficient": 0.0045,
+                "density": 7850,
+                "mu_r": 1000,
+                "mu_r_max": 5000,
+                "saturation_B": 2.0,
+                "coercivity": 400,
+                "melting_point": 1810,
+                "curie_temperature": 1043,
+                "thermal_conductivity": 50,
+                "specific_heat": 490,
+                "young_modulus": 200000000000.0
+            },
+            "advanced_properties": {
+                "saturation_M": 1.4e6,
+                "anisotropy_constant_K1": 11000,
+                "exchange_stiffness": 18e-12,
+                "domain_wall_energy": 0.008,
+                "yield_strength": 220e6,
+                "ultimate_strength": 400e6,
+                "fatigue_limit": 140e6,
+                "fracture_toughness": 50e6,
+                "hardness_hv": 120,
+                "impact_energy": 27,
+                "strain_rate_sensitivity": 0.015,
+                "adiabatic_shear_band_threshold": 1e4,
+                "dynamic_yield_strength_factor": 1.3
+            },
+            "jiles_atherton_params": {
+                "ms": 1.4e6,
+                "a": 800,
+                "alpha": 2e-3,
+                "c": 0.2,
+                "k": 800
+            },
+            "bh_curve_params": {
+                "temperature_dependence": true,
+                "T_ref": 293.15,
+                "dM_dT": -1.8,
+                "dHc_dT": 0.1
+            }
+        },
+        "Silicon_Steel": {
+            "description": "Silicon steel (electrical steel) - Optimized for magnetic applications",
+            "classification": "ferromagnetic",
+            "basic_properties": {
+                "resistivity": 4.7e-07,
+                "resistivity_20C": 4.7e-07,
+                "temperature_coefficient": 0.004,
+                "density": 7650,
+                "mu_r": 15000,
+                "mu_r_max": 100000,
+                "saturation_B": 2.0,
+                "coercivity": 20,
+                "melting_point": 1810,
+                "curie_temperature": 1043,
+                "thermal_conductivity": 25,
+                "specific_heat": 460,
+                "young_modulus": 200000000000.0
+            },
+            "advanced_properties": {
+                "saturation_M": 1.6e6,
+                "anisotropy_constant_K1": 45000,
+                "exchange_stiffness": 20e-12,
+                "domain_wall_energy": 0.005,
+                "magnetic_moment_per_atom": 2.15
+            },
+            "jiles_atherton_params": {
+                "ms": 1.6e6,
+                "a": 1500,
+                "alpha": 2e-4,
+                "c": 0.03,
+                "k": 30
+            },
+            "core_loss_params": {
+                "steinmetz_k": 0.001,
+                "steinmetz_n": 1.7,
+                "steinmetz_m": 2.0
+            }
+        },
+        "Aluminum": {
+            "description": "Aluminum for non-magnetic projectiles",
+            "classification": "paramagnetic",
+            "basic_properties": {
+                "resistivity": 2.65e-08,
+                "resistivity_20C": 2.65e-08,
+                "temperature_coefficient": 0.00429,
+                "density": 2700,
+                "mu_r": 1.000022,
+                "conductivity": 37700000.0,
+                "melting_point": 933.47,
+                "thermal_conductivity": 237,
+                "specific_heat": 897,
+                "young_modulus": 70000000000.0
+            },
+            "advanced_properties": {
+                "yield_strength": 40e6,
+                "ultimate_strength": 90e6,
+                "elongation_at_break": 0.12,
+                "fatigue_limit": 30e6,
+                "fracture_toughness": 30e6,
+                "hardness_hv": 30
+            }
+        },
+        "Brass": {
+            "description": "Brass for non-magnetic applications",
+            "classification": "diamagnetic",
+            "basic_properties": {
+                "resistivity": 7e-08,
+                "resistivity_20C": 7e-08,
+                "temperature_coefficient": 0.0015,
+                "density": 8500,
+                "mu_r": 1.0,
+                "melting_point": 1173,
+                "thermal_conductivity": 120,
+                "specific_heat": 385,
+                "young_modulus": 103000000000.0
+            },
+            "advanced_properties": {
+                "yield_strength": 200e6,
+                "ultimate_strength": 400e6,
+                "elongation_at_break": 0.15,
+                "hardness_hv": 100
+            }
+        },
+        "Neodymium_Magnet": {
+            "description": "Neodymium permanent magnet material (N42 grade)",
+            "classification": "permanent_magnet",
+            "basic_properties": {
+                "resistivity": 1.6e-06,
+                "density": 7500,
+                "mu_r": 1.05,
+                "B_remanence": 1.32,
+                "H_coercivity": 875000,
+                "energy_product": 318000,
+                "curie_temperature": 593
+            },
+            "advanced_properties": {
+                "temperature_coefficient_Br": -0.12,
+                "temperature_coefficient_Hc": -0.60,
+                "reversible_permeability": 1.05,
+                "recoil_permeability": 1.05,
+                "compressive_strength": 1000e6,
+                "tensile_strength": 80e6
+            }
+        },
+        "Air": {
+            "description": "Standard air at sea level",
+            "classification": "paramagnetic",
+            "basic_properties": {
+                "resistivity": 1e+16,
+                "density": 1.225,
+                "mu_r": 1.00000037,
+                "dielectric_constant": 1.00058986
+            }
+        },
+        "Vacuum": {
+            "description": "Perfect vacuum",
+            "classification": "vacuum",
+            "basic_properties": {
+                "resistivity": 1e20,
+                "density": 0,
+                "mu_r": 1.0,
+                "dielectric_constant": 1.0
+            }
+        }
+    },
+    "wire_specifications": {
+        "awg_diameter_mm": {
+            "6": 4.115, "7": 3.665, "8": 3.264, "9": 2.906, "10": 2.588,
+            "11": 2.305, "12": 2.053, "13": 1.828, "14": 1.628, "15": 1.45,
+            "16": 1.291, "17": 1.15, "18": 1.024, "19": 0.912, "20": 0.812,
+            "21": 0.723, "22": 0.644, "23": 0.573, "24": 0.511, "25": 0.455,
+            "26": 0.405, "27": 0.361, "28": 0.321, "29": 0.286, "30": 0.255,
+            "32": 0.203, "34": 0.16, "36": 0.127
+        },
+        "current_capacity_A": {
+            "6": 101, "7": 89, "8": 73, "9": 64, "10": 55,
+            "11": 47, "12": 41, "13": 35, "14": 32, "15": 28,
+            "16": 22, "17": 19, "18": 16, "19": 14, "20": 11,
+            "21": 9, "22": 7, "23": 4.7, "24": 3.5, "25": 2.8,
+            "26": 2.2, "27": 1.7, "28": 1.4, "29": 1.2, "30": 0.86,
+            "32": 0.53, "34": 0.33, "36": 0.21
+        },
+        "resistance_per_km": {
+            "10": 3.277, "12": 5.211, "14": 8.282, "16": 13.17,
+            "18": 20.95, "20": 33.31, "22": 52.96, "24": 84.22
+        }
+    },
+    "material_combinations": {
+        "recommended_projectiles": {
+            "high_permeability": ["Pure_Iron", "Silicon_Steel"],
+            "medium_permeability": ["Low_Carbon_Steel"],
+            "non_magnetic": ["Aluminum", "Brass"],
+            "permanent_magnet": ["Neodymium_Magnet"]
+        },
+        "recommended_wire": {
+            "low_resistance": ["Copper"],
+            "high_temperature": ["Aluminum"]
+        }
+    },
+    "environmental_conditions": {
+        "standard_temperature": 293.15,
+        "standard_pressure": 101325,
+        "humidity_range": [0.3, 0.7],
+        "operating_temperature_range": {
+            "min": 223.15,
+            "max": 373.15
+        }
+    },
+    "simulation_parameters": {
+        "frequency_ranges": {
+            "dc": 0,
+            "low_frequency": [1, 1000],
+            "medium_frequency": [1000, 100000],
+            "high_frequency": [100000, 1000000]
+        },
+        "accuracy_levels": {
+            "basic": {
+                "use_temperature_effects": false,
+                "use_frequency_effects": false,
+                "use_hysteresis": false
+            },
+            "advanced": {
+                "use_temperature_effects": true,
+                "use_frequency_effects": true,
+                "use_hysteresis": false
+            },
+            "phd": {
+                "use_temperature_effects": true,
+                "use_frequency_effects": true,
+                "use_hysteresis": true,
+                "use_nonlinear_effects": true
+            }
+        }
+    },
+    "coilgun_typical_configs": {
+        "small_experimental": {
+            "coil_inner_diameter": 0.01,
+            "coil_length": 0.05,
+            "wire_gauge_awg": 18,
+            "num_layers": 4,
+            "capacitance": 0.001,
+            "max_voltage": 400,
+            "projectile_material": "Pure_Iron",
+            "expected_velocity": 50
+        },
+        "medium_power": {
+            "coil_inner_diameter": 0.015,
+            "coil_length": 0.075,
+            "wire_gauge_awg": 16,
+            "num_layers": 6,
+            "capacitance": 0.0033,
+            "max_voltage": 450,
+            "projectile_material": "Low_Carbon_Steel",
+            "expected_velocity": 100
+        },
+        "high_power": {
+            "coil_inner_diameter": 0.02,
+            "coil_length": 0.1,
+            "wire_gauge_awg": 14,
+            "num_layers": 8,
+            "capacitance": 0.01,
+            "max_voltage": 500,
+            "projectile_material": "Pure_Iron",
+            "expected_velocity": 200
+        },
+        "research_grade": {
+            "coil_inner_diameter": 0.025,
+            "coil_length": 0.15,
+            "wire_gauge_awg": 12,
+            "num_layers": 10,
+            "capacitance": 0.02,
+            "max_voltage": 600,
+            "projectile_material": "Silicon_Steel",
+            "expected_velocity": 300
+        }
+    }
+} 

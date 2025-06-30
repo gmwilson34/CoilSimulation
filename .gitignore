@@ -8,6 +8,12 @@
 !visualizations_test_config/
 !GPUAccelerationFiles/
 !GPUAccelerationFiles/**
+!physics/
+!physics/**
+!solver/
+!solver/**
+!viewer/
+!viewer/**
 
 # Also, do not ignore files in the root directory
 !/*
