@@ -693,6 +693,10 @@ class AdvancedMaterialProperties(BasePhysicsModel):
         if temperature is None:
             temperature = self.temperature
         
+        # Ensure temperature is not None after assignment
+        if temperature is None:
+            temperature = PhysicsConstants.ROOM_TEMPERATURE
+        
         if not self.include_temperature_effects:
             return self.get_material_property(material_name, property_name)
         
@@ -764,6 +768,10 @@ class AdvancedMaterialProperties(BasePhysicsModel):
         if frequency is None:
             frequency = self.operating_frequency
         
+        # Ensure frequency is not None after assignment
+        if frequency is None:
+            frequency = 1000.0  # Default frequency if all else fails
+        
         base_value = self.get_material_property(material_name, property_name)
         
         if frequency < 100:  # DC or very low frequency
@@ -772,8 +780,13 @@ class AdvancedMaterialProperties(BasePhysicsModel):
         # Apply frequency corrections
         if property_name in ['mu_r', 'mu_r_initial']:
             # Permeability decreases with frequency due to eddy current shielding
-            freq_coeffs = self.get_material_property(material_name, 'frequency_coefficients', {})
-            perm_coeff = freq_coeffs.get('permeability_f_coeff', -0.1)
+            # Try to get frequency coefficients from material data
+            try:
+                material_data = self.materials_data['materials'][material_name]
+                freq_coeffs = material_data.get('frequency_coefficients', {})
+                perm_coeff = freq_coeffs.get('permeability_f_coeff', -0.1)
+            except (KeyError, AttributeError):
+                perm_coeff = -0.1  # Default value
             
             # μ(f) = μ₀ * (1 + a*log₁₀(f))
             freq_factor = 1.0 + perm_coeff * np.log10(frequency / 1000)  # Normalized to 1 kHz
@@ -825,6 +838,10 @@ class AdvancedMaterialProperties(BasePhysicsModel):
         if temperature is None:
             temperature = self.temperature
         
+        # Ensure temperature is not None after assignment
+        if temperature is None:
+            temperature = PhysicsConstants.ROOM_TEMPERATURE
+        
         # Get Steinmetz parameters
         k_steinmetz = self.get_material_property(material_name, 'steinmetz_k', 0.001)
         n_freq = self.get_material_property(material_name, 'steinmetz_n', 1.7)
@@ -838,7 +855,7 @@ class AdvancedMaterialProperties(BasePhysicsModel):
         
         return max(core_loss, 0.0)
     
-    def get_material_property(self, material_name: str, property_name: str, default: float = None) -> float:
+    def get_material_property(self, material_name: str, property_name: str, default: Optional[float] = None) -> float:
         """
         Get a material property by name with high-performance caching.
         
@@ -864,7 +881,7 @@ class AdvancedMaterialProperties(BasePhysicsModel):
         
         return value
     
-    def _get_material_property_uncached(self, material_name: str, property_name: str, default: float = None, silent: bool = False) -> float:
+    def _get_material_property_uncached(self, material_name: str, property_name: str, default: Optional[float] = None, silent: bool = False) -> float:
         """
         Internal method to get material property without caching (for cache population).
         
@@ -1030,9 +1047,9 @@ class AdvancedMaterialProperties(BasePhysicsModel):
         diameter = self.get_wire_diameter(awg)
         return np.pi * (diameter / 2.0) ** 2
 
-    def get_extreme_condition_properties(self, material_name: str, temperature: float = None,
-                                       strain_rate: float = None, magnetic_field: float = None,
-                                       shock_pressure: float = None) -> dict:
+    def get_extreme_condition_properties(self, material_name: str, temperature: Optional[float] = None,
+                                       strain_rate: Optional[float] = None, magnetic_field: Optional[float] = None,
+                                       shock_pressure: Optional[float] = None) -> dict:
         """
         CRITICAL NEW METHOD: Get material properties under extreme conditions.
         
@@ -1051,7 +1068,7 @@ class AdvancedMaterialProperties(BasePhysicsModel):
         
         # Set default conditions if not provided
         if temperature is None:
-            temperature = self.temperature
+            temperature = self.temperature if self.temperature is not None else PhysicsConstants.ROOM_TEMPERATURE
         if strain_rate is None:
             strain_rate = 1.0  # s⁻¹ (quasi-static)
         if magnetic_field is None:

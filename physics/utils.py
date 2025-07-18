@@ -195,7 +195,7 @@ def calculate_projectile_metrics(config: Dict[str, Any]) -> Dict[str, float]:
     }
 
 
-def estimate_system_performance(config: Dict[str, Any]) -> Dict[str, float]:
+def estimate_system_performance(config: Dict[str, Any]) -> Dict[str, Union[float, str]]:
     """
     Estimate basic system performance metrics from configuration.
     
@@ -203,7 +203,7 @@ def estimate_system_performance(config: Dict[str, Any]) -> Dict[str, float]:
         config: Configuration dictionary
         
     Returns:
-        Dictionary with performance estimates
+        Dictionary with performance estimates (floats and strings)
     """
     # Get component metrics
     coil_metrics = calculate_coil_metrics(config)

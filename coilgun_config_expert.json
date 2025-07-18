@@ -1,40 +1,36 @@
 {
     "coil": {
-        "inner_diameter": 0.055,
-        "length": 0.06,
-        "wire_gauge_awg": 10,
-        "num_layers": 3,
-        "total_turns": 54,
         "wire_material": "Copper",
+        "inner_diameter": 0.053,
+        "length": 0.063,
+        "wire_gauge_awg": 12,
         "packing_factor": 0.9,
-        "insulation_thickness": 3e-05,
-        "thermal_class": "H",
-        "insulation_type": "polyimide"
+        "num_layers": 4,
+        "total_turns": 100,
+        "insulation_thickness": 3e-05
     },
     "projectile": {
-        "diameter": 0.0508,
-        "length": 0.06,
-        "mass": 0.9546368906196856,
         "material": "Pure_Iron",
-        "initial_position": -0.0075,
-        "initial_velocity": 0.0,
-        "surface_roughness": 1e-09,
-        "hardness": 100
+        "diameter": 0.0508,
+        "length": 0.063,
+        "mass": 1.0023687351506698,
+        "initial_position": -0.063,
+        "initial_velocity": 0.0
     },
     "capacitor": {
-        "capacitance": 0.5,
-        "initial_voltage": 600.0,
+        "capacitance": 0.032,
+        "initial_voltage": 425.0,
         "esr": 0.01,
         "esl": 1e-07
     },
     "simulation": {
         "time_span": [
             0,
-            0.0001
+            0.1
         ],
-        "max_step": 1e-09,
-        "tolerance": 1e-09,
-        "method": "RK45"
+        "max_step": 1e-06,
+        "tolerance": 1e-08,
+        "method": "Radau"
     },
     "circuit_model": {
         "switch_resistance": 0.001,
@@ -44,53 +40,48 @@
         "include_proximity_effect": true
     },
     "magnetic_model": {
-        "calculation_method": "finite_solenoid",
+        "calculation_method": "biot_savart",
         "axial_discretization": 5000,
-        "radial_discretization": 500,
+        "radial_discretization": 1000,
         "include_saturation": true,
-        "include_hysteresis": false,
+        "include_hysteresis": true,
         "include_eddy_currents": true,
         "include_skin_effect": true,
-        "accuracy_level": "high",
         "force_components": {
             "reluctance_force": true,
             "lorentz_force": true,
-            "maxwell_stress": false,
-            "image_force": false,
+            "maxwell_stress": true,
+            "image_force": true,
             "eddy_force": true
         }
     },
     "advanced_physics": {
         "jiles_atherton": {
-            "enabled": false
+            "enabled": true
         },
         "eddy_currents": {
-            "enabled": true,
-            "discretization_method": "adaptive",
-            "skin_depth_calculation": true,
-            "frequency_dependence": true
+            "enabled": true
         },
         "thermal": {
-            "enabled": false
+            "enabled": true
         },
         "energy_conservation": {
             "enabled": true,
-            "tolerance": 1e-04,
-            "check_interval": 100
+            "tolerance": 1e-06
         }
     },
     "solver": {
-        "method": "RK45",
-        "rtol": 1e-06,
-        "atol": 1e-08,
-        "max_step": 5e-05
+        "method": "BDF",
+        "rtol": 1e-12,
+        "atol": 1e-14,
+        "max_step": 0.000001
     },
     "output": {
         "save_trajectory": true,
         "save_current_profile": true,
         "save_field_data": true,
         "print_progress": true,
-        "save_interval": 50
+        "save_interval": 5
     },
     "environment": {
         "temperature": 293.15,

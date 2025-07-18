@@ -9,6 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
+import gc
+import pandas as pd # Added for robust numeric conversion
 
 from .core import BaseVisualizer, setup_signal_handling
 from .fields import MagneticFieldCalculator, FieldLineTracer
@@ -196,6 +198,8 @@ class CoilgunVisualizationEngine(BaseVisualizer):
         )
         
         print(f"Field visualization suite completed: {output_path}")
+        plt.close('all')  # Close any remaining figures
+        gc.collect()  # Force garbage collection to free memory
         return output_path
     
     def create_quick_analysis(self, simulation_results=None, save_prefix="quick_analysis"):
@@ -267,7 +271,7 @@ class CoilgunVisualizationEngine(BaseVisualizer):
         print(f"Creating {animation_type} animation...")
         
         if animation_type == "motion" or animation_type == "all":
-            self.animator.animate_projectile_motion(
+            self.animator.animate_3d_projectile_motion(
                 simulation_results, 
                 save_path=save_path
             )
@@ -366,11 +370,58 @@ class CoilgunVisualizationEngine(BaseVisualizer):
             print("No time series data available for analysis")
             return
         
-        time_data = np.array(simulation_results['time_series']['time'])
-        current_data = np.array(simulation_results['time_series']['current'])
-        force_data = np.array(simulation_results['time_series']['force_total'])
-        position_data = np.array(simulation_results['time_series']['position'])
-        velocity_data = np.array(simulation_results['time_series']['velocity'])
+        try:
+            # Helper function to convert to numeric array
+            def to_numeric_array(data, name):
+                if not isinstance(data, (list, np.ndarray)):
+                    raise TypeError(f"{name} data is not list-like: type {type(data)}")
+                series = pd.Series(data)
+                numeric = pd.to_numeric(series, errors='coerce')
+                numeric = numeric.astype(float)
+                if numeric.isnull().all():
+                    raise ValueError(f"All values in {name} are invalid for numeric conversion")
+                return np.array(numeric)
+            
+            # Extract with debugging
+            time_data = to_numeric_array(simulation_results['time_series']['time'], 'time')
+            current_data = to_numeric_array(simulation_results['time_series']['current'], 'current')
+            force_data = to_numeric_array(simulation_results['time_series']['force_total'], 'force_total')
+            position_data = to_numeric_array(simulation_results['time_series']['position'], 'position')
+            velocity_data = to_numeric_array(simulation_results['time_series']['velocity'], 'velocity')
+        except (KeyError, TypeError, ValueError) as e:
+            print(f"Error extracting or converting simulation data: {e}")
+            if 'time_series' in simulation_results:
+                for key in ['time', 'current', 'force_total', 'position', 'velocity']:
+                    if key in simulation_results['time_series']:
+                        data = simulation_results['time_series'][key]
+                        print(f"Debug - {key} type: {type(data)}, length: {len(data) if hasattr(data, '__len__') else 'N/A'}, sample: {data[:3] if hasattr(data, '__getitem__') else 'N/A'}")
+            print("Skipping simulation analysis due to data issues")
+            return
+        
+        try:
+            # Remove rows with any NaN values
+            data_stack = np.column_stack((time_data, current_data, force_data, position_data, velocity_data))
+            
+            # Check if data_stack is numeric
+            if not np.issubdtype(data_stack.dtype, np.number):
+                print(f"Debug: data_stack dtype is {data_stack.dtype}, which is not numeric")
+                print(f"Sample data: {data_stack[:3]}")
+                raise ValueError("Data stack contains non-numeric types")
+            
+            valid_mask = ~np.isnan(data_stack).any(axis=1)
+            if not np.any(valid_mask):
+                print("All data contains NaN values, skipping analysis")
+                return
+            
+            time_data = time_data[valid_mask]
+            current_data = current_data[valid_mask]
+            force_data = force_data[valid_mask]
+            position_data = position_data[valid_mask]
+            velocity_data = velocity_data[valid_mask]
+        except Exception as e:
+            print(f"Error processing data arrays: {e}")
+            print("Skipping simulation analysis due to data processing failure")
+            return
         
         # Create comprehensive simulation analysis plot
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))

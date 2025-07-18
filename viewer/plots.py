@@ -241,7 +241,7 @@ class ForcePlotter(BaseVisualizer):
             ax3.grid(True, alpha=0.3)
             
             # Add position range info
-            pos_range = f'Range: {np.min(position_mm):.2f} to {np.max(position_mm):.2f} mm'
+            pos_range = f'Range: {np.min(position_mm):.2f} to {np.max(position_mm):.2f} mm' if len(position_mm) > 0 else 'Range: N/A'
             ax3.text(0.02, 0.98, pos_range, transform=ax3.transAxes, 
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7),
                     verticalalignment='top')
@@ -261,10 +261,10 @@ class ForcePlotter(BaseVisualizer):
         
         # Add simulation statistics as text
         stats_text = f"""Simulation Statistics:
-Duration: {np.max(time_data)*1000:.2f} ms
-Max Current: {np.max(current_data):.2f} A
-Max Force: {np.max(force_data):.2f} N
-Max Velocity: {np.max(velocity_data):.2f} m/s
+Duration: {np.max(time_data)*1000:.2f} ms if len(time_data) > 0 else 0:.2f
+Max Current: {np.max(current_data):.2f} A if len(current_data) > 0 else 0:.2f
+Max Force: {np.max(force_data):.2f} N if len(force_data) > 0 else 0:.2f
+Max Velocity: {np.max(velocity_data):.2f} m/s if len(velocity_data) > 0 else 0:.2f
 Data Points: {len(time_data)}"""
         
         fig.text(0.02, 0.02, stats_text, fontsize=10, 

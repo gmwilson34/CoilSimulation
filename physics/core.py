@@ -18,6 +18,9 @@ class PhysicsConstants:
     EPSILON_0 = 8.854187817e-12  # Permittivity of free space (F/m)
     C = 299792458  # Speed of light (m/s)
     
+    # Thermodynamic constants
+    K_BOLTZMANN = 1.380649e-23  # Boltzmann constant (J/K)
+    
     # Standard conditions
     ROOM_TEMPERATURE = 293.15  # K (20°C)
     STANDARD_PRESSURE = 101325  # Pa
@@ -116,8 +119,8 @@ class PhysicsCalculationError(Exception):
     pass
 
 
-def validate_physical_parameter(value: float, name: str, min_val: float = None, 
-                              max_val: float = None, allow_zero: bool = True) -> float:
+def validate_physical_parameter(value: float, name: str, min_val: Optional[float] = None, 
+                              max_val: Optional[float] = None, allow_zero: bool = True) -> float:
     """Validate a physical parameter against bounds and finite checks."""
     if not np.isfinite(value):
         raise ValidationError(f"{name} must be finite, got {value}")

@@ -116,58 +116,528 @@ class ConfigurationBuilder:
 
 
 class AdvancedSetupInterface:
-    """Advanced setup interface with physics-aware configuration."""
+    """Advanced setup interface with physics-aware configuration and backwards navigation."""
     
     def __init__(self):
         """Initialize the setup interface."""
         self.builder = ConfigurationBuilder()
         self.setup_modes = ['Basic', 'Advanced', 'Expert', 'Custom']
         self.current_mode = 'Advanced'
-    
-    def select_setup_mode(self) -> str:
-        """Allow user to select setup complexity level."""
-        print("\n" + "="*60)
-        print("CONFIGURATION SETUP MODE SELECTION")
-        print("="*60)
-        print("Choose your setup complexity level:")
-        print("  1. Basic     - Simple single-stage coilgun (educational)")
-        print("  2. Advanced  - Multi-physics with standard accuracy")
-        print("  3. Expert    - Full physics with research-grade accuracy")
-        print("  4. Custom    - Expert mode with all options")
         
-        while True:
-            try:
-                choice = input("\nSelect mode (1-4) [2]: ").strip()
-                if not choice:
-                    choice = '2'
-                
-                mode_map = {'1': 'Basic', '2': 'Advanced', '3': 'Expert', '4': 'Custom'}
-                if choice in mode_map:
-                    self.current_mode = mode_map[choice]
-                    print(f"Selected: {self.current_mode} mode")
-                    return self.current_mode
-                else:
-                    print("Please enter 1, 2, 3, or 4")
-            except KeyboardInterrupt:
+        # History tracking for backwards navigation
+        self.input_history = []
+        self.current_step = 0
+        self.setup_steps = []
+        
+        # Setup flow state machine
+        self.setup_flow = [
+            ('setup_mode', 'Select setup mode'),
+            ('coil_wire_material', 'Select coil wire material'),
+            ('coil_inner_diameter', 'Coil inner diameter'),
+            ('coil_length', 'Coil length'),
+            ('coil_wire_gauge', 'Wire gauge selection'),
+            ('coil_packing_factor', 'Wire packing factor'),
+            ('coil_auto_calculate', 'Auto-calculate turns'),
+            ('coil_num_layers', 'Number of layers'),
+            ('coil_total_turns', 'Total turns'),
+            ('projectile_material', 'Projectile material'),
+            ('projectile_diameter', 'Projectile diameter'),
+            ('projectile_length', 'Projectile length'),
+            ('projectile_use_calculated_mass', 'Use calculated mass'),
+            ('projectile_mass', 'Projectile mass'),
+            ('projectile_initial_position', 'Initial position'),
+            ('capacitor_capacitance', 'Capacitance'),
+            ('capacitor_initial_voltage', 'Initial voltage'),
+            ('capacitor_esr', 'Capacitor ESR'),
+            ('capacitor_esl', 'Capacitor ESL'),
+            ('simulation_time_span', 'Simulation time'),
+            ('magnetic_calculation_method', 'Magnetic field calculation method'),
+            ('magnetic_axial_discretization', 'Axial discretization points'),
+            ('magnetic_radial_discretization', 'Radial discretization points'),
+            ('magnetic_include_saturation', 'Include magnetic saturation'),
+            ('magnetic_include_hysteresis', 'Include hysteresis effects'),
+            ('magnetic_include_eddy_currents', 'Include eddy current effects'),
+            ('magnetic_include_skin_effect', 'Include skin effect'),
+            ('force_reluctance', 'Include reluctance force'),
+            ('force_lorentz', 'Include Lorentz force'),
+            ('force_maxwell_stress', 'Include Maxwell stress tensor'),
+            ('force_image', 'Include magnetic image force'),
+            ('force_eddy', 'Include eddy current force'),
+            ('ja_enabled', 'Enable Jiles-Atherton hysteresis'),
+            ('eddy_enabled', 'Enable 3D eddy current modeling'),
+            ('thermal_enabled', 'Enable thermal modeling'),
+            ('energy_conservation_tol', 'Energy conservation tolerance'),
+            ('solver_method', 'Solver method'),
+            ('solver_rtol', 'Relative tolerance'),
+            ('solver_atol', 'Absolute tolerance'),
+            ('solver_max_step', 'Maximum step size'),
+            ('config_filename', 'Configuration filename')
+        ]
+        self.current_flow_index = 0
+        
+    def add_to_history(self, step_name: str, value: Any, prompt: str = ""):
+        """Add an input to the history for backwards navigation."""
+        # Remove any existing entry for this step
+        self.input_history = [entry for entry in self.input_history if entry['step_name'] != step_name]
+        
+        self.input_history.append({
+            'step_name': step_name,
+            'value': value,
+            'prompt': prompt,
+            'timestamp': len(self.input_history)
+        })
+    
+    def go_back(self) -> bool:
+        """Go back one step in the setup process."""
+        if self.current_flow_index > 0:
+            self.current_flow_index -= 1
+            return True
+        return False
+    
+    def go_forward(self) -> bool:
+        """Go forward one step in the setup process."""
+        if self.current_flow_index < len(self.setup_flow) - 1:
+            self.current_flow_index += 1
+            return True
+        return False
+    
+    def get_previous_value(self, step_name: str) -> Any:
+        """Get the previous value for a specific step."""
+        for entry in self.input_history:
+            if entry['step_name'] == step_name:
+                return entry['value']
+        return None
+    
+    def show_navigation_help(self):
+        """Show navigation help information."""
+        print("\n📋 Navigation Commands:")
+        print("  'back' or 'b' - Go back to previous input")
+        print("  'forward' or 'f' - Skip to next input")
+        print("  'help' or 'h' - Show this help")
+        print("  'restart' or 'r' - Restart from beginning")
+        print("  'quit' or 'q' - Exit setup")
+        print("  'history' - Show input history")
+        print("  'goto <step>' - Jump to specific step (e.g., 'goto coil_diameter')")
+    
+    def handle_special_command(self, user_input: str) -> Optional[str]:
+        """Handle special navigation commands."""
+        user_input = user_input.strip().lower()
+        
+        if user_input in ['back', 'b']:
+            if self.go_back():
+                print("↩ Going back to previous input...")
+                return "BACK"
+            else:
+                print("❌ Already at the beginning")
+                return None
+        elif user_input in ['forward', 'f']:
+            if self.go_forward():
+                print("→ Skipping to next input...")
+                return "FORWARD"
+            else:
+                print("❌ Already at the end")
+                return None
+        elif user_input in ['help', 'h']:
+            self.show_navigation_help()
+            return "HELP"
+        elif user_input in ['restart', 'r']:
+            if input("Are you sure you want to restart? [y/N]: ").strip().lower() in ['y', 'yes']:
+                self.input_history = []
+                self.current_flow_index = 0
+                print("🔄 Restarting setup...")
+                return "RESTART"
+            return None
+        elif user_input in ['quit', 'q']:
+            if input("Are you sure you want to quit? [y/N]: ").strip().lower() in ['y', 'yes']:
                 print("\nSetup cancelled.")
                 sys.exit(0)
+            return None
+        elif user_input == 'history':
+            self.show_history()
+            return "HISTORY"
+        elif user_input.startswith('goto '):
+            step_name = user_input[5:].strip()
+            return self.goto_step(step_name)
+        
+        return None
+    
+    def goto_step(self, step_name: str) -> Optional[str]:
+        """Jump to a specific step by name."""
+        for i, (name, description) in enumerate(self.setup_flow):
+            if name == step_name:
+                self.current_flow_index = i
+                print(f"→ Jumping to: {description}")
+                return "GOTO"
+        
+        print(f"❌ Step '{step_name}' not found")
+        print("Available steps:")
+        for name, description in self.setup_flow:
+            print(f"  {name}: {description}")
+        return None
+    
+    def show_history(self):
+        """Show the input history."""
+        if not self.input_history:
+            print("No input history yet.")
+            return
+        
+        print("\n📜 Input History:")
+        for i, entry in enumerate(self.input_history):
+            current_marker = " ←" if self.setup_flow[self.current_flow_index][0] == entry['step_name'] else ""
+            print(f"  {entry['step_name']}: {entry['value']}{current_marker}")
+        
+        print(f"\nCurrent step: {self.setup_flow[self.current_flow_index][1]}")
+    
+    def run_setup_flow(self) -> Dict[str, Any]:
+        """Run the complete setup flow with backwards navigation."""
+        print("\n🚀 Starting interactive setup with backwards navigation...")
+        print("Type 'help' at any time to see navigation commands.")
+        
+        config = {}
+        
+        while self.current_flow_index < len(self.setup_flow):
+            step_name, step_description = self.setup_flow[self.current_flow_index]
+            
+            print(f"\n📍 Step {self.current_flow_index + 1}/{len(self.setup_flow)}: {step_description}")
+            
+            # Get the value for this step
+            value = self.get_step_value(step_name, step_description)
+            
+            if value is not None:
+                config[step_name] = value
+                self.add_to_history(step_name, value, step_description)
+                self.current_flow_index += 1
+            else:
+                # User wants to go back or quit
+                continue
+        
+        return config
+    
+    def get_step_value(self, step_name: str, step_description: str) -> Any:
+        """Get the value for a specific setup step."""
+        
+        # Check if we have a previous value for this step
+        previous_value = self.get_previous_value(step_name)
+        if previous_value is not None:
+            print(f"↩ Previous value: {previous_value}")
+        
+        if step_name == 'setup_mode':
+            return self.select_setup_mode()
+        elif step_name == 'coil_wire_material':
+            return self.get_material_choice("coil wire", default="Copper", step_name=step_name)
+        elif step_name == 'coil_inner_diameter':
+            return self.get_float_input("Coil inner diameter", default=0.053, min_val=0.001, max_val=0.5, unit="m", step_name=step_name)
+        elif step_name == 'coil_length':
+            return self.get_float_input("Coil length", default=0.063, min_val=0.001, max_val=1.0, unit="m", step_name=step_name)
+        elif step_name == 'coil_wire_gauge':
+            return self.get_wire_gauge_input(step_name)
+        elif step_name == 'coil_packing_factor':
+            return self.get_float_input("Wire packing factor", default=0.9, min_val=0.5, max_val=0.95, step_name=step_name)
+        elif step_name == 'coil_auto_calculate':
+            return self.get_boolean_input("Auto-calculate optimal turns?", default=True, step_name=step_name)
+        elif step_name == 'coil_num_layers':
+            # Check if auto-calculate is enabled
+            auto_calc = self.get_previous_value('coil_auto_calculate')
+            if auto_calc:
+                # Auto-calculate based on geometry and wire specs
+                inner_diameter = self.get_previous_value('coil_inner_diameter') or 0.053
+                length = self.get_previous_value('coil_length') or 0.063
+                wire_gauge = self.get_previous_value('coil_wire_gauge') or '12'
+                packing_factor = self.get_previous_value('coil_packing_factor') or 0.9
+                
+                # Calculate optimal geometry
+                wire_specs = self.builder.get_wire_specifications()
+                wire_diameter = wire_specs['awg_diameter_mm'].get(wire_gauge, 1.291) / 1000  # Convert to meters
+                wire_with_insulation = wire_diameter * 1.1  # Assume 10% insulation
+                turns_per_layer = int(length / (wire_with_insulation / packing_factor))
+                
+                # Suggest reasonable number of layers
+                suggested_layers = max(1, min(10, int(0.01 / wire_diameter)))  # Aim for ~10mm total thickness
+                
+                print(f"\n🧮 Auto-calculated coil geometry:")
+                print(f"  Wire diameter: {wire_diameter*1000:.3f}mm")
+                print(f"  Turns per layer: {turns_per_layer}")
+                print(f"  Suggested layers: {suggested_layers}")
+                
+                return suggested_layers
+            else:
+                return int(self.get_float_input("Number of layers", default=4, min_val=1, max_val=50, step_name=step_name))
+        elif step_name == 'coil_total_turns':
+            # Check if auto-calculate is enabled
+            auto_calc = self.get_previous_value('coil_auto_calculate')
+            if auto_calc:
+                # Calculate total turns from layers and turns per layer
+                num_layers = self.get_previous_value('coil_num_layers') or 4
+                inner_diameter = self.get_previous_value('coil_inner_diameter') or 0.053
+                length = self.get_previous_value('coil_length') or 0.063
+                wire_gauge = self.get_previous_value('coil_wire_gauge') or '12'
+                packing_factor = self.get_previous_value('coil_packing_factor') or 0.9
+                
+                wire_specs = self.builder.get_wire_specifications()
+                wire_diameter = wire_specs['awg_diameter_mm'].get(wire_gauge, 1.291) / 1000
+                wire_with_insulation = wire_diameter * 1.1
+                turns_per_layer = int(length / (wire_with_insulation / packing_factor))
+                total_turns = turns_per_layer * num_layers
+                
+                print(f"✓ Auto-calculated: {turns_per_layer} turns/layer × {num_layers} layers = {total_turns} total turns")
+                return total_turns
+            else:
+                return int(self.get_float_input("Total turns", default=100, min_val=10, max_val=100000, step_name=step_name))
+        elif step_name == 'projectile_material':
+            return self.get_material_choice("projectile", default="Pure_Iron", step_name=step_name)
+        elif step_name == 'projectile_diameter':
+            return self.get_float_input("Projectile diameter", default=0.0508, min_val=0.001, max_val=0.1, unit="m", step_name=step_name)
+        elif step_name == 'projectile_length':
+            return self.get_float_input("Projectile length", default=0.063, min_val=0.001, max_val=0.5, unit="m", step_name=step_name)
+        elif step_name == 'projectile_use_calculated_mass':
+            return self.get_boolean_input("Use calculated mass?", default=True, step_name=step_name)
+        elif step_name == 'projectile_mass':
+            # Calculate mass from previous inputs
+            diameter = self.get_previous_value('projectile_diameter') or 0.0508
+            length = self.get_previous_value('projectile_length') or 0.063
+            material = self.get_previous_value('projectile_material') or "Pure_Iron"
+            material_props = self.builder.get_material_properties(material)
+            material_density = material_props.get('density', 7850)
+            volume = np.pi * (diameter/2)**2 * length
+            calculated_mass = material_density * volume
+            return self.get_float_input("Custom projectile mass", default=1.00, min_val=1e-6, max_val=5.0, unit="kg", step_name=step_name)
+        elif step_name == 'projectile_initial_position':
+            length = self.get_previous_value('projectile_length') or 0.063
+            return self.get_float_input("Initial position (negative = behind coil center)", default=-0.025, min_val=-1.0, max_val=1.0, unit="m", step_name=step_name)
+        elif step_name == 'capacitor_capacitance':
+            return self.get_float_input("Capacitance", default=0.032, min_val=1e-6, max_val=1.0, unit="F", step_name=step_name)
+        elif step_name == 'capacitor_initial_voltage':
+            return self.get_float_input("Initial voltage", default=425.0, min_val=1, max_val=10000, unit="V", step_name=step_name)
+        elif step_name == 'capacitor_esr':
+            return self.get_float_input("Capacitor ESR (Equivalent Series Resistance)", default=0.01, min_val=1e-6, max_val=10.0, unit="Ω", step_name=step_name)
+        elif step_name == 'capacitor_esl':
+            return self.get_float_input("Capacitor ESL (Equivalent Series Inductance)", default=1e-7, min_val=1e-12, max_val=1e-3, unit="H", step_name=step_name)
+        elif step_name == 'simulation_time_span':
+            return self.get_float_input("Simulation time", default=0.1, min_val=1e-6, max_val=1.0, unit="s", step_name=step_name)
+        elif step_name == 'magnetic_calculation_method':
+            methods = ['finite_solenoid', 'biot_savart', 'finite_element', 'analytical']
+            method_descriptions = {
+                'finite_solenoid': 'Fast solenoid approximation (good for most cases)',
+                'biot_savart': 'Accurate Biot-Savart integration (slower, very accurate)',
+                'finite_element': 'FEM solver (research-grade, very slow)',
+                'analytical': 'Analytical expressions where available'
+            }
+            print("\nMagnetic field calculation methods:")
+            for i, method in enumerate(methods, 1):
+                print(f"  {i}. {method} - {method_descriptions[method]}")
+            choice = self.get_string_input(f"Select method (1-{len(methods)})", default="1", step_name=step_name)
+            return methods[int(choice) - 1]
+        elif step_name == 'magnetic_axial_discretization':
+            return int(self.get_float_input("Axial discretization points", default=1000, min_val=100, max_val=20000, step_name=step_name))
+        elif step_name == 'magnetic_radial_discretization':
+            return int(self.get_float_input("Radial discretization points", default=100, min_val=10, max_val=2000, step_name=step_name))
+        elif step_name == 'magnetic_include_saturation':
+            return self.get_boolean_input("Include magnetic saturation?", default=True, step_name=step_name)
+        elif step_name == 'magnetic_include_hysteresis':
+            return self.get_boolean_input("Include hysteresis effects?", default=True, step_name=step_name)
+        elif step_name == 'magnetic_include_eddy_currents':
+            return self.get_boolean_input("Include eddy current effects?", default=True, step_name=step_name)
+        elif step_name == 'magnetic_include_skin_effect':
+            return self.get_boolean_input("Include skin effect?", default=True, step_name=step_name)
+        elif step_name == 'force_reluctance':
+            return self.get_boolean_input("Include reluctance force (∇L method)?", default=True, step_name=step_name)
+        elif step_name == 'force_lorentz':
+            return self.get_boolean_input("Include Lorentz force (J×B)?", default=True, step_name=step_name)
+        elif step_name == 'force_maxwell_stress':
+            return self.get_boolean_input("Include Maxwell stress tensor?", default=True, step_name=step_name)
+        elif step_name == 'force_image':
+            return self.get_boolean_input("Include magnetic image force?", default=True, step_name=step_name)
+        elif step_name == 'force_eddy':
+            return self.get_boolean_input("Include eddy current force?", default=True, step_name=step_name)
+        elif step_name == 'ja_enabled':
+            return self.get_boolean_input("Enable Jiles-Atherton hysteresis model?", default=True, step_name=step_name)
+        elif step_name == 'eddy_enabled':
+            return self.get_boolean_input("Enable 3D eddy current modeling?", default=True, step_name=step_name)
+        elif step_name == 'thermal_enabled':
+            return self.get_boolean_input("Enable thermal modeling?", default=True, step_name=step_name)
+        elif step_name == 'energy_conservation_tol':
+            return self.get_float_input("Energy conservation tolerance", default=1e-6, min_val=1e-12, max_val=1e-3, step_name=step_name)
+        elif step_name == 'solver_method':
+            methods = ['RK45', 'RK23', 'Radau', 'BDF', 'LSODA']
+            method_descriptions = {
+                'RK45': 'Runge-Kutta 4(5) - Good general purpose',
+                'RK23': 'Runge-Kutta 2(3) - Faster, less accurate',
+                'Radau': 'Implicit Radau - Stiff problems',
+                'BDF': 'Backward differentiation - Very stiff',
+                'LSODA': 'Adaptive stiff/non-stiff'
+            }
+            print("\nSolver methods:")
+            for i, method in enumerate(methods, 1):
+                print(f"  {i}. {method} - {method_descriptions[method]}")
+            choice = self.get_string_input(f"Select solver method (1-{len(methods)})", default="3", step_name=step_name)
+            return methods[int(choice) - 1]
+        elif step_name == 'solver_rtol':
+            return self.get_float_input("Relative tolerance", default=1e-8, min_val=1e-12, max_val=1e-3, step_name=step_name)
+        elif step_name == 'solver_atol':
+            return self.get_float_input("Absolute tolerance", default=1e-10, min_val=1e-15, max_val=1e-6, step_name=step_name)
+        elif step_name == 'solver_max_step':
+            return self.get_float_input("Maximum step size", default=1e-4, min_val=1e-8, max_val=1e-2, unit="s", step_name=step_name)
+        elif step_name == 'config_filename':
+            suggested_name = f"coilgun_config_{self.current_mode.lower().replace('-', '_')}.json"
+            return self.get_string_input("Configuration filename", default=suggested_name, step_name=step_name)
+        else:
+            print(f"❌ Unknown step: {step_name}")
+            return None
+    
+    def get_wire_gauge_input(self, step_name: str) -> str:
+        """Get wire gauge selection with backwards navigation."""
+        wire_specs = self.builder.get_wire_specifications()
+        available_awg = list(wire_specs.get('awg_diameter_mm', {}).keys())
+        
+        print("\nAvailable wire gauges (AWG):")
+        for awg in available_awg:
+            diameter = wire_specs['awg_diameter_mm'].get(awg, 0)
+            current = wire_specs['current_capacity_A'].get(awg, 0)
+            print(f"  AWG {awg}: {diameter:.3f}mm diameter, {current}A capacity")
+        
+        return self.get_string_input("Select wire gauge", default="12", step_name=step_name)
+    
+    def build_configuration_from_flow(self, flow_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Build complete configuration from flow results."""
+        mode = flow_config.get('setup_mode', 'Advanced')
+        
+        # Build coil configuration
+        coil_config = {
+            'wire_material': flow_config.get('coil_wire_material', 'Copper'),
+            'inner_diameter': flow_config.get('coil_inner_diameter', 0.053),
+            'length': flow_config.get('coil_length', 0.063),
+            'wire_gauge_awg': int(flow_config.get('coil_wire_gauge', '12')),
+            'packing_factor': flow_config.get('coil_packing_factor', 0.9),
+            'num_layers': flow_config.get('coil_num_layers', 4),
+            'total_turns': flow_config.get('coil_total_turns', 100),
+            'insulation_thickness': 3e-5
+        }
+        
+        # Build projectile configuration
+        projectile_config = {
+            'material': flow_config.get('projectile_material', 'Pure_Iron'),
+            'diameter': flow_config.get('projectile_diameter', 0.0508),
+            'length': flow_config.get('projectile_length', 0.063),
+            'mass': flow_config.get('projectile_mass', 1.0023687351506698),
+            'initial_position': flow_config.get('projectile_initial_position', -0.025),
+            'initial_velocity': 0.0
+        }
+        
+        # Build capacitor configuration
+        capacitor_config = {
+            'capacitance': flow_config.get('capacitor_capacitance', 0.032),
+            'initial_voltage': flow_config.get('capacitor_initial_voltage', 425.0),
+            'esr': flow_config.get('capacitor_esr', 0.01),
+            'esl': flow_config.get('capacitor_esl', 1e-7)
+        }
+        
+        # Build simulation configuration
+        simulation_time = flow_config.get('simulation_time_span', 0.1)
+        simulation_config = {
+            'time_span': [0, simulation_time],
+            'max_step': 1e-6,
+            'tolerance': 1e-8,
+            'method': 'Radau'
+        }
+        
+        # Build complete configuration
+        complete_config = {
+            'coil': coil_config,
+            'projectile': projectile_config,
+            'capacitor': capacitor_config,
+            'simulation': simulation_config,
+            'circuit_model': {
+                'switch_resistance': 0.001,
+                'switch_inductance': 1e-8,
+                'parasitic_capacitance': 1e-11,
+                'include_skin_effect': mode in ['Advanced', 'Expert', 'Custom'],
+                'include_proximity_effect': mode in ['Expert', 'Custom']
+            },
+            'magnetic_model': {
+                'calculation_method': flow_config.get('magnetic_calculation_method', 'finite_solenoid'),
+                'axial_discretization': flow_config.get('magnetic_axial_discretization', 1000),
+                'radial_discretization': flow_config.get('magnetic_radial_discretization', 100),
+                'include_saturation': flow_config.get('magnetic_include_saturation', True),
+                'include_hysteresis': flow_config.get('magnetic_include_hysteresis', True),
+                'include_eddy_currents': flow_config.get('magnetic_include_eddy_currents', True),
+                'include_skin_effect': flow_config.get('magnetic_include_skin_effect', True),
+                'force_components': {
+                    'reluctance_force': flow_config.get('force_reluctance', True),
+                    'lorentz_force': flow_config.get('force_lorentz', True),
+                    'maxwell_stress': flow_config.get('force_maxwell_stress', True),
+                    'image_force': flow_config.get('force_image', True),
+                    'eddy_force': flow_config.get('force_eddy', True)
+                }
+            },
+            'advanced_physics': {
+                'jiles_atherton': {'enabled': flow_config.get('ja_enabled', True)},
+                'eddy_currents': {'enabled': flow_config.get('eddy_enabled', True)},
+                'thermal': {'enabled': flow_config.get('thermal_enabled', True)},
+                'energy_conservation': {'enabled': True, 'tolerance': flow_config.get('energy_conservation_tol', 1e-6)}
+            },
+            'solver': {
+                'method': flow_config.get('solver_method', 'RK45'),
+                'rtol': flow_config.get('solver_rtol', 1e-8),
+                'atol': flow_config.get('solver_atol', 1e-10),
+                'max_step': flow_config.get('solver_max_step', 1e-4)
+            },
+            'output': {
+                'save_trajectory': True,
+                'save_current_profile': True,
+                'save_field_data': mode in ['Advanced', 'Expert', 'Custom'],
+                'print_progress': True,
+                'save_interval': 100 if mode != 'Expert' else 50
+            },
+            'environment': {
+                'temperature': 293.15,
+                'pressure': 101325,
+                'humidity': 0.5
+            }
+        }
+        
+        return complete_config
     
     def get_float_input(self, prompt: str, default: Optional[float] = None, 
                        min_val: Optional[float] = None, max_val: Optional[float] = None,
-                       unit: str = "") -> float:
-        """Enhanced float input with physics validation."""
+                       unit: str = "", step_name: str = "") -> float:
+        """Enhanced float input with physics validation and backwards navigation."""
         unit_str = f" ({unit})" if unit else ""
+        
         while True:
             try:
                 if default is not None:
                     full_prompt = f"{prompt}{unit_str} [default: {default}]: "
                     user_input = input(full_prompt).strip()
                     if not user_input:
-                        return default
+                        value = default
+                    else:
+                        # Check for special commands
+                        special_result = self.handle_special_command(user_input)
+                        if special_result == "BACK":
+                            return None  # Signal to go back
+                        elif special_result == "FORWARD":
+                            return default  # Use default and continue
+                        elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                            continue
+                        elif special_result == "RESTART":
+                            return self.get_float_input(prompt, default, min_val, max_val, unit, step_name)
+                        else:
+                            value = float(user_input)
                 else:
                     user_input = input(f"{prompt}{unit_str}: ").strip()
-                
-                value = float(user_input)
+                    
+                    # Check for special commands
+                    special_result = self.handle_special_command(user_input)
+                    if special_result == "BACK":
+                        return None  # Signal to go back
+                    elif special_result == "FORWARD":
+                        return None  # Can't forward without default
+                    elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                        continue
+                    elif special_result == "RESTART":
+                        return self.get_float_input(prompt, default, min_val, max_val, unit, step_name)
+                    else:
+                        value = float(user_input)
                 
                 # Physics-based validation
                 if min_val is not None and value < min_val:
@@ -185,8 +655,8 @@ class AdvancedSetupInterface:
                 print("\nSetup cancelled.")
                 sys.exit(0)
     
-    def get_material_choice(self, purpose: str, default: str = None) -> str:
-        """Get material choice with physics properties display."""
+    def get_material_choice(self, purpose: str, default: str = None, step_name: str = "") -> str:
+        """Get material choice with physics properties display and backwards navigation."""
         available_materials = self.builder.get_available_materials()
         
         print(f"\nSelect material for {purpose}:")
@@ -200,26 +670,57 @@ class AdvancedSetupInterface:
                 if default:
                     choice = input(f"\nEnter choice (1-{len(available_materials)}) [default: {default}]: ").strip()
                     if not choice:
-                        return default
+                        selected = default
+                    else:
+                        # Check for special commands
+                        special_result = self.handle_special_command(choice)
+                        if special_result == "BACK":
+                            return None  # Signal to go back
+                        elif special_result == "FORWARD":
+                            return default  # Use default and continue
+                        elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                            continue
+                        elif special_result == "RESTART":
+                            return self.get_material_choice(purpose, default, step_name)
+                        else:
+                            choice_idx = int(choice) - 1
+                            if 0 <= choice_idx < len(available_materials):
+                                selected = available_materials[choice_idx]
+                            else:
+                                print(f"Please enter a number between 1 and {len(available_materials)}")
+                                continue
                 else:
                     choice = input(f"\nEnter choice (1-{len(available_materials)}): ").strip()
+                    
+                    # Check for special commands
+                    special_result = self.handle_special_command(choice)
+                    if special_result == "BACK":
+                        return None  # Signal to go back
+                    elif special_result == "FORWARD":
+                        return None  # Can't forward without default
+                    elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                        continue
+                    elif special_result == "RESTART":
+                        return self.get_material_choice(purpose, default, step_name)
+                    else:
+                        choice_idx = int(choice) - 1
+                        if 0 <= choice_idx < len(available_materials):
+                            selected = available_materials[choice_idx]
+                        else:
+                            print(f"Please enter a number between 1 and {len(available_materials)}")
+                            continue
                 
-                choice_idx = int(choice) - 1
-                if 0 <= choice_idx < len(available_materials):
-                    selected = available_materials[choice_idx]
-                    
-                    # Show material properties
-                    props = self.builder.get_material_properties(selected)
-                    print(f"\n✓ Selected: {selected}")
-                    if props:
-                        print("  Properties:")
-                        for key, value in props.items():
-                            if isinstance(value, (int, float)) and key != 'description':
-                                print(f"    {key}: {value}")
-                    
-                    return selected
-                else:
-                    print(f"Please enter a number between 1 and {len(available_materials)}")
+                # Show material properties
+                props = self.builder.get_material_properties(selected)
+                print(f"\n✓ Selected: {selected}")
+                if props:
+                    print("  Properties:")
+                    for key, value in props.items():
+                        if isinstance(value, (int, float)) and key != 'description':
+                            print(f"    {key}: {value}")
+                
+                return selected
+                
             except ValueError:
                 print("Please enter a valid number")
             except KeyboardInterrupt:
@@ -233,14 +734,14 @@ class AdvancedSetupInterface:
         print("="*60)
         
         # Select wire material first for resistance calculations
-        wire_material = self.get_material_choice("coil wire", default="Copper")
+        wire_material = self.get_material_choice("coil wire", default="Copper", step_name="coil_wire_material")
         
         # Basic geometry
         inner_diameter = self.get_float_input(
-            "Coil inner diameter", default=0.02, min_val=0.001, max_val=0.5, unit="m"
+            "Coil inner diameter", default=0.053, min_val=0.001, max_val=0.5, unit="m", step_name="coil_inner_diameter"
         )
         length = self.get_float_input(
-            "Coil length", default=0.05, min_val=0.001, max_val=1.0, unit="m"
+            "Coil length", default=0.063, min_val=0.001, max_val=1.0, unit="m", step_name="coil_length"
         )
         
         # Wire selection with specifications
@@ -253,7 +754,7 @@ class AdvancedSetupInterface:
             current = wire_specs['current_capacity_A'].get(awg, 0)
             print(f"  AWG {awg}: {diameter:.3f}mm diameter, {current}A capacity")
         
-        wire_gauge_awg = input(f"\nSelect wire gauge [16]: ").strip() or "16"
+        wire_gauge_awg = self.get_string_input("Select wire gauge", default="12", step_name="coil_wire_gauge")
         
         # Calculate optimal number of layers and turns
         if self.current_mode in ['Advanced', 'Expert']:
@@ -261,12 +762,12 @@ class AdvancedSetupInterface:
             
             wire_diameter = wire_specs['awg_diameter_mm'].get(wire_gauge_awg, 1.291) / 1000  # Convert to meters
             packing_factor = self.get_float_input(
-                "Wire packing factor", default=0.85, min_val=0.5, max_val=0.95
+                "Wire packing factor", default=0.9, min_val=0.5, max_val=0.95, step_name="coil_packing_factor"
             )
             
             # Auto-calculate or manual input
-            auto_calc = input("Auto-calculate optimal turns? [Y/n]: ").strip().lower()
-            if auto_calc in ['', 'y', 'yes']:
+            auto_calc = self.get_boolean_input("Auto-calculate optimal turns?", default=True, step_name="coil_auto_calculate")
+            if auto_calc:
                 # Calculate based on fill factor and geometry
                 wire_with_insulation = wire_diameter * 1.1  # Assume 10% insulation
                 turns_per_layer = int(length / (wire_with_insulation / packing_factor))
@@ -276,18 +777,18 @@ class AdvancedSetupInterface:
                 
                 num_layers = int(self.get_float_input(
                     f"Number of layers (suggested: {suggested_layers})", 
-                    default=suggested_layers, min_val=1, max_val=50
+                    default=suggested_layers, min_val=1, max_val=50, step_name="coil_num_layers"
                 ))
                 
                 total_turns = turns_per_layer * num_layers
                 print(f"✓ Calculated: {turns_per_layer} turns/layer × {num_layers} layers = {total_turns} total turns")
             else:
-                num_layers = int(self.get_float_input("Number of layers", default=3, min_val=1, max_val=50))
-                total_turns = int(self.get_float_input("Total turns", default=1000, min_val=10, max_val=100000))
+                num_layers = int(self.get_float_input("Number of layers", default=4, min_val=1, max_val=50, step_name="coil_num_layers"))
+                total_turns = int(self.get_float_input("Total turns", default=100, min_val=10, max_val=100000, step_name="coil_total_turns"))
         else:
             # Basic mode - simple inputs
-            num_layers = int(self.get_float_input("Number of layers", default=3, min_val=1, max_val=20))
-            total_turns = int(self.get_float_input("Total turns", default=1000, min_val=10, max_val=50000))
+            num_layers = int(self.get_float_input("Number of layers", default=4, min_val=1, max_val=20, step_name="coil_num_layers"))
+            total_turns = int(self.get_float_input("Total turns", default=100, min_val=10, max_val=50000, step_name="coil_total_turns"))
         
         config = {
             'inner_diameter': inner_diameter,
@@ -296,14 +797,14 @@ class AdvancedSetupInterface:
             'num_layers': num_layers,
             'total_turns': total_turns,
             'wire_material': wire_material,
-            'packing_factor': packing_factor if self.current_mode in ['Advanced', 'Expert'] else 0.85,
+            'packing_factor': packing_factor if self.current_mode in ['Advanced', 'Expert'] else 0.9,
             'insulation_thickness': 3e-5  # Default 30 micrometers
         }
         
         # Add advanced parameters for higher complexity modes
         if self.current_mode in ['Expert', 'Custom']:
-            config['thermal_class'] = input("Wire thermal class [H]: ").strip() or "H"
-            config['insulation_type'] = input("Insulation type [polyimide]: ").strip() or "polyimide"
+            config['thermal_class'] = self.get_string_input("Wire thermal class", default="H", step_name="coil_thermal_class")
+            config['insulation_type'] = self.get_string_input("Insulation type", default="polyimide", step_name="coil_insulation_type")
             
             # Calculate and display coil metrics
             temp_config = {'coil': config}
@@ -326,16 +827,16 @@ class AdvancedSetupInterface:
         print("="*60)
         
         # Select material first for density
-        material = self.get_material_choice("projectile", default="Pure_Iron")
+        material = self.get_material_choice("projectile", default="Pure_Iron", step_name="projectile_material")
         material_props = self.builder.get_material_properties(material)
         material_density = material_props.get('density', 7850)  # kg/m³
         
         # Geometry
         diameter = self.get_float_input(
-            "Projectile diameter", default=0.008, min_val=0.001, max_val=0.1, unit="m"
+            "Projectile diameter", default=0.0508, min_val=0.001, max_val=0.1, unit="m", step_name="projectile_diameter"
         )
         length = self.get_float_input(
-            "Projectile length", default=0.015, min_val=0.001, max_val=0.5, unit="m"
+            "Projectile length", default=0.063, min_val=0.001, max_val=0.5, unit="m", step_name="projectile_length"
         )
         
         # Calculate mass from material density
@@ -347,19 +848,19 @@ class AdvancedSetupInterface:
         print(f"  Density ({material}): {material_density} kg/m³")
         print(f"  Calculated mass: {calculated_mass*1000:.2f} g")
         
-        use_calculated = input("Use calculated mass? [Y/n]: ").strip().lower()
-        if use_calculated in ['', 'y', 'yes']:
+        use_calculated = self.get_boolean_input("Use calculated mass?", default=True, step_name="projectile_use_calculated_mass")
+        if use_calculated:
             mass = calculated_mass
         else:
             mass = self.get_float_input(
-                "Custom projectile mass", default=calculated_mass, 
-                min_val=1e-6, max_val=5.0, unit="kg"
+                "Custom projectile mass", default=1.0023687351506698, 
+                min_val=1e-6, max_val=5.0, unit="kg", step_name="projectile_mass"
             )
         
         # Initial conditions
         initial_position = self.get_float_input(
             "Initial position (negative = behind coil center)", 
-            default=-length, min_val=-1.0, max_val=1.0, unit="m"
+            default=-0.025, min_val=-1.0, max_val=1.0, unit="m", step_name="projectile_initial_position"
         )
         
         config = {
@@ -374,7 +875,7 @@ class AdvancedSetupInterface:
         # Add advanced parameters for complex modes
         if self.current_mode in ['Expert', 'Custom']:
             config['surface_roughness'] = self.get_float_input(
-                "Surface roughness (RMS)", default=1e-6, min_val=1e-9, max_val=1e-3, unit="m"
+                "Surface roughness (RMS)", default=1e-6, min_val=1e-9, max_val=1e-3, unit="m", step_name="projectile_surface_roughness"
             )
             config['hardness'] = material_props.get('hardness_hv', 100)
         
@@ -388,10 +889,10 @@ class AdvancedSetupInterface:
         
         # Basic parameters
         capacitance = self.get_float_input(
-            "Capacitance", default=0.001, min_val=1e-6, max_val=1.0, unit="F"
+            "Capacitance", default=0.032, min_val=1e-6, max_val=1.0, unit="F", step_name="capacitor_capacitance"
         )
         initial_voltage = self.get_float_input(
-            "Initial voltage", default=400, min_val=1, max_val=10000, unit="V"  # SafetyLimits.MAX_VOLTAGE fallback
+            "Initial voltage", default=425.0, min_val=1, max_val=10000, unit="V", step_name="capacitor_initial_voltage"
         )
         
         # Calculate and display energy
@@ -407,11 +908,11 @@ class AdvancedSetupInterface:
         if self.current_mode in ['Advanced', 'Expert', 'Custom']:
             config['esr'] = self.get_float_input(
                 "Equivalent series resistance (ESR)", 
-                default=0.01, min_val=1e-6, max_val=10.0, unit="Ω"
+                default=0.01, min_val=1e-6, max_val=10.0, unit="Ω", step_name="capacitor_esr"
             )
             config['esl'] = self.get_float_input(
                 "Equivalent series inductance (ESL)", 
-                default=1e-7, min_val=1e-12, max_val=1e-3, unit="H"
+                default=1e-7, min_val=1e-12, max_val=1e-3, unit="H", step_name="capacitor_esl"
             )
         else:
             config['esr'] = 0.01
@@ -463,19 +964,19 @@ class AdvancedSetupInterface:
             print("Configuring research-grade physics models...")
             
             # Jiles-Atherton hysteresis
-            if input("\nEnable Jiles-Atherton hysteresis model? [Y/n]: ").strip().lower() not in ['n', 'no']:
+            if self.get_boolean_input("\nEnable Jiles-Atherton hysteresis model?", default=True, step_name="ja_enabled"):
                 ja_config = {'enabled': True}
                 
-                if input("Use material-specific J-A parameters? [Y/n]: ").strip().lower() not in ['n', 'no']:
+                if self.get_boolean_input("Use material-specific J-A parameters?", default=True, step_name="ja_use_material_defaults"):
                     ja_config['use_material_defaults'] = True
                 else:
                     # Custom J-A parameters
                     ja_config.update({
-                        'Ms': self.get_float_input("Saturation magnetization Ms", default=1.7e6, unit="A/m"),
-                        'a': self.get_float_input("Shape parameter 'a'", default=1000, unit="A/m"),
-                        'alpha': self.get_float_input("Interdomain coupling 'alpha'", default=1e-3),
-                        'c': self.get_float_input("Reversible fraction 'c'", default=0.1, min_val=0, max_val=1),
-                        'k': self.get_float_input("Pinning parameter 'k'", default=500, unit="A/m")
+                        'Ms': self.get_float_input("Saturation magnetization Ms", default=1.7e6, unit="A/m", step_name="ja_Ms"),
+                        'a': self.get_float_input("Shape parameter 'a'", default=1000, unit="A/m", step_name="ja_a"),
+                        'alpha': self.get_float_input("Interdomain coupling 'alpha'", default=1e-3, step_name="ja_alpha"),
+                        'c': self.get_float_input("Reversible fraction 'c'", default=0.1, min_val=0, max_val=1, step_name="ja_c"),
+                        'k': self.get_float_input("Pinning parameter 'k'", default=500, unit="A/m", step_name="ja_k")
                     })
                 
                 config['jiles_atherton'] = ja_config
@@ -483,7 +984,7 @@ class AdvancedSetupInterface:
                 config['jiles_atherton'] = {'enabled': False}
             
             # Eddy current modeling
-            if input("\nEnable 3D eddy current modeling? [Y/n]: ").strip().lower() not in ['n', 'no']:
+            if self.get_boolean_input("\nEnable 3D eddy current modeling?", default=True, step_name="eddy_enabled"):
                 eddy_config = {
                     'enabled': True,
                     'discretization_method': 'adaptive',
@@ -493,10 +994,10 @@ class AdvancedSetupInterface:
                 
                 if self.current_mode == 'Custom':
                     eddy_config['mesh_refinement_levels'] = int(self.get_float_input(
-                        "Mesh refinement levels", default=3, min_val=1, max_val=6
+                        "Mesh refinement levels", default=3, min_val=1, max_val=6, step_name="eddy_mesh_levels"
                     ))
                     eddy_config['convergence_tolerance'] = self.get_float_input(
-                        "Convergence tolerance", default=1e-6, min_val=1e-12, max_val=1e-3
+                        "Convergence tolerance", default=1e-6, min_val=1e-12, max_val=1e-3, step_name="eddy_convergence_tol"
                     )
                 
                 config['eddy_currents'] = eddy_config
@@ -504,15 +1005,15 @@ class AdvancedSetupInterface:
                 config['eddy_currents'] = {'enabled': False}
             
             # Thermal modeling
-            if input("\nEnable thermal modeling? [Y/n]: ").strip().lower() not in ['n', 'no']:
+            if self.get_boolean_input("\nEnable thermal modeling?", default=True, step_name="thermal_enabled"):
                 thermal_config = {
                     'enabled': True,
                     'coupling_strength': 'strong',
                     'ambient_temperature': self.get_float_input(
-                        "Ambient temperature", default=293.15, min_val=200, max_val=400, unit="K"
+                        "Ambient temperature", default=293.15, min_val=200, max_val=400, unit="K", step_name="thermal_ambient_temp"
                     ),
                     'convection_coefficient': self.get_float_input(
-                        "Convection coefficient", default=10, min_val=1, max_val=100, unit="W/(m²⋅K)"
+                        "Convection coefficient", default=10, min_val=1, max_val=100, unit="W/(m²⋅K)", step_name="thermal_convection_coeff"
                     )
                 }
                 config['thermal'] = thermal_config
@@ -523,10 +1024,10 @@ class AdvancedSetupInterface:
             config['energy_conservation'] = {
                 'enabled': True,
                 'tolerance': self.get_float_input(
-                    "Energy conservation tolerance", default=1e-8, min_val=1e-12, max_val=1e-3
+                    "Energy conservation tolerance", default=1e-8, min_val=1e-12, max_val=1e-3, step_name="energy_conservation_tol"
                 ),
                 'check_interval': int(self.get_float_input(
-                    "Energy check interval (steps)", default=100, min_val=1, max_val=1000
+                    "Energy check interval (steps)", default=100, min_val=1, max_val=1000, step_name="energy_conservation_check_interval"
                 ))
             }
         
@@ -569,7 +1070,7 @@ class AdvancedSetupInterface:
         for i, method in enumerate(methods, 1):
             print(f"  {i}. {method} - {method_descriptions[method]}")
         
-        choice = input(f"\nSelect method (1-{len(methods)}) [1]: ").strip() or "1"
+        choice = self.get_string_input(f"Select method (1-{len(methods)})", default="1", step_name="magnetic_calculation_method")
         calculation_method = methods[int(choice) - 1]
         
         config = {
@@ -577,31 +1078,31 @@ class AdvancedSetupInterface:
             'axial_discretization': int(self.get_float_input(
                 "Axial discretization points", 
                 default=1000 if self.current_mode != 'Expert' else 5000,
-                min_val=100, max_val=20000
+                min_val=100, max_val=20000, step_name="magnetic_axial_discretization"
             )),
             'radial_discretization': int(self.get_float_input(
                 "Radial discretization points",
                 default=100 if self.current_mode != 'Expert' else 500,
-                min_val=10, max_val=2000
+                min_val=10, max_val=2000, step_name="magnetic_radial_discretization"
             ))
         }
         
         # Physics effects
         config.update({
-            'include_saturation': input("Include magnetic saturation? [Y/n]: ").strip().lower() not in ['n', 'no'],
-            'include_hysteresis': input("Include hysteresis effects? [y/N]: ").strip().lower() in ['y', 'yes'],
-            'include_eddy_currents': input("Include eddy current effects? [Y/n]: ").strip().lower() not in ['n', 'no'],
-            'include_skin_effect': input("Include skin effect? [Y/n]: ").strip().lower() not in ['n', 'no'],
+            'include_saturation': self.get_boolean_input("Include magnetic saturation?", default=True, step_name="magnetic_include_saturation"),
+            'include_hysteresis': self.get_boolean_input("Include hysteresis effects?", default=False, step_name="magnetic_include_hysteresis"),
+            'include_eddy_currents': self.get_boolean_input("Include eddy current effects?", default=True, step_name="magnetic_include_eddy_currents"),
+            'include_skin_effect': self.get_boolean_input("Include skin effect?", default=True, step_name="magnetic_include_skin_effect"),
         })
         
         # Force components
         print("\nForce calculation components:")
         force_components = {
-            'reluctance_force': input("Include reluctance force (∇L method)? [Y/n]: ").strip().lower() not in ['n', 'no'],
-            'lorentz_force': input("Include Lorentz force (J×B)? [Y/n]: ").strip().lower() not in ['n', 'no'],
-            'maxwell_stress': input("Include Maxwell stress tensor? [Y/n]: ").strip().lower() not in ['n', 'no'],
-            'image_force': input("Include magnetic image force? [Y/n]: ").strip().lower() not in ['n', 'no'],
-            'eddy_force': config['include_eddy_currents'] and input("Include eddy current force? [Y/n]: ").strip().lower() not in ['n', 'no']
+            'reluctance_force': self.get_boolean_input("Include reluctance force (∇L method)?", default=True, step_name="force_reluctance"),
+            'lorentz_force': self.get_boolean_input("Include Lorentz force (J×B)?", default=True, step_name="force_lorentz"),
+            'maxwell_stress': self.get_boolean_input("Include Maxwell stress tensor?", default=True, step_name="force_maxwell_stress"),
+            'image_force': self.get_boolean_input("Include magnetic image force?", default=True, step_name="force_image"),
+            'eddy_force': config['include_eddy_currents'] and self.get_boolean_input("Include eddy current force?", default=True, step_name="force_eddy")
         }
         config['force_components'] = force_components
         
@@ -636,18 +1137,18 @@ class AdvancedSetupInterface:
             for i, method in enumerate(methods, 1):
                 print(f"  {i}. {method} - {method_descriptions[method]}")
             
-            choice = input(f"\nSelect solver method (1-{len(methods)}) [3]: ").strip() or "3"
+            choice = self.get_string_input(f"Select solver method (1-{len(methods)})", default="3", step_name="solver_method")
             config['method'] = methods[int(choice) - 1]
             
             # Tolerances
             config['rtol'] = self.get_float_input(
-                "Relative tolerance", default=1e-8, min_val=1e-12, max_val=1e-3
+                "Relative tolerance", default=1e-8, min_val=1e-12, max_val=1e-3, step_name="solver_rtol"
             )
             config['atol'] = self.get_float_input(
-                "Absolute tolerance", default=1e-10, min_val=1e-15, max_val=1e-6
+                "Absolute tolerance", default=1e-10, min_val=1e-15, max_val=1e-6, step_name="solver_atol"
             )
             config['max_step'] = self.get_float_input(
-                "Maximum step size", default=1e-4, min_val=1e-8, max_val=1e-2, unit="s"
+                "Maximum step size", default=1e-4, min_val=1e-8, max_val=1e-2, unit="s", step_name="solver_max_step"
             )
         
         return config
@@ -665,7 +1166,7 @@ class AdvancedSetupInterface:
         
         # Simulation parameters
         config['simulation'] = {
-            'time_span': [0, self.get_float_input("Simulation time", default=0.01, min_val=1e-6, max_val=1.0, unit="s")],
+            'time_span': [0, self.get_float_input("Simulation time", default=0.1, min_val=1e-6, max_val=1.0, unit="s", step_name="simulation_time_span")],
             'max_step': 1e-6,
             'tolerance': 1e-8,
             'method': 'Radau'
@@ -703,6 +1204,151 @@ class AdvancedSetupInterface:
         
         return config
 
+    def select_setup_mode(self) -> str:
+        """Allow user to select setup complexity level."""
+        print("\n" + "="*60)
+        print("CONFIGURATION SETUP MODE SELECTION")
+        print("="*60)
+        print("Choose your setup complexity level:")
+        print("  1. Basic     - Simple single-stage coilgun (educational)")
+        print("  2. Advanced  - Multi-physics with standard accuracy")
+        print("  3. Expert    - Full physics with research-grade accuracy")
+        print("  4. Custom    - Expert mode with all options")
+        
+        while True:
+            try:
+                choice = input("\nSelect mode (1-4) [2]: ").strip()
+                if not choice:
+                    choice = '2'
+                
+                # Check for special commands
+                special_result = self.handle_special_command(choice)
+                if special_result == "BACK":
+                    return None  # Signal to go back
+                elif special_result == "FORWARD":
+                    return "Advanced"  # Use default and continue
+                elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                    continue
+                elif special_result == "RESTART":
+                    return self.select_setup_mode()
+                
+                mode_map = {'1': 'Basic', '2': 'Advanced', '3': 'Expert', '4': 'Custom'}
+                if choice in mode_map:
+                    self.current_mode = mode_map[choice]
+                    print(f"Selected: {self.current_mode} mode")
+                    return self.current_mode
+                else:
+                    print("Please enter 1, 2, 3, or 4")
+            except KeyboardInterrupt:
+                print("\nSetup cancelled.")
+                sys.exit(0)
+    
+    def get_string_input(self, prompt: str, default: Optional[str] = None, 
+                        step_name: str = "", allow_empty: bool = False) -> str:
+        """Get string input with backwards navigation support."""
+        while True:
+            try:
+                if default is not None:
+                    full_prompt = f"{prompt} [default: {default}]: "
+                    user_input = input(full_prompt).strip()
+                    if not user_input:
+                        value = default
+                    else:
+                        # Check for special commands
+                        special_result = self.handle_special_command(user_input)
+                        if special_result == "BACK":
+                            return None  # Signal to go back
+                        elif special_result == "FORWARD":
+                            return default  # Use default and continue
+                        elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                            continue
+                        elif special_result == "RESTART":
+                            return self.get_string_input(prompt, default, step_name, allow_empty)
+                        else:
+                            value = user_input
+                else:
+                    user_input = input(f"{prompt}: ").strip()
+                    
+                    # Check for special commands
+                    special_result = self.handle_special_command(user_input)
+                    if special_result == "BACK":
+                        return None  # Signal to go back
+                    elif special_result == "FORWARD":
+                        return None  # Can't forward without default
+                    elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                        continue
+                    elif special_result == "RESTART":
+                        return self.get_string_input(prompt, default, step_name, allow_empty)
+                    else:
+                        value = user_input
+                
+                # Validation
+                if not allow_empty and not value:
+                    print("❌ This field cannot be empty")
+                    continue
+                
+                return value
+                
+            except KeyboardInterrupt:
+                print("\nSetup cancelled.")
+                sys.exit(0)
+    
+    def get_boolean_input(self, prompt: str, default: Optional[bool] = None, 
+                         step_name: str = "") -> bool:
+        """Get boolean input with backwards navigation support."""
+        while True:
+            try:
+                if default is not None:
+                    default_str = "Y" if default else "N"
+                    full_prompt = f"{prompt} [Y/n] [default: {default_str}]: "
+                    user_input = input(full_prompt).strip().lower()
+                    if not user_input:
+                        value = default
+                    else:
+                        # Check for special commands
+                        special_result = self.handle_special_command(user_input)
+                        if special_result == "BACK":
+                            return None  # Signal to go back
+                        elif special_result == "FORWARD":
+                            return default  # Use default and continue
+                        elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                            continue
+                        elif special_result == "RESTART":
+                            return self.get_boolean_input(prompt, default, step_name)
+                        elif user_input in ['y', 'yes', 'true', '1']:
+                            value = True
+                        elif user_input in ['n', 'no', 'false', '0']:
+                            value = False
+                        else:
+                            print("Please enter Y/n, yes/no, true/false, or 1/0")
+                            continue
+                else:
+                    user_input = input(f"{prompt} [Y/n]: ").strip().lower()
+                    
+                    # Check for special commands
+                    special_result = self.handle_special_command(user_input)
+                    if special_result == "BACK":
+                        return None  # Signal to go back
+                    elif special_result == "FORWARD":
+                        return None  # Can't forward without default
+                    elif special_result in ["HELP", "HISTORY", "GOTO"]:
+                        continue
+                    elif special_result == "RESTART":
+                        return self.get_boolean_input(prompt, default, step_name)
+                    elif user_input in ['y', 'yes', 'true', '1']:
+                        value = True
+                    elif user_input in ['n', 'no', 'false', '0']:
+                        value = False
+                    else:
+                        print("Please enter Y/n, yes/no, true/false, or 1/0")
+                        continue
+                
+                return value
+                
+            except KeyboardInterrupt:
+                print("\nSetup cancelled.")
+                sys.exit(0)
+
 
 def validate_and_save_configuration(config: Dict[str, Any], filename: str) -> bool:
     """Validate configuration against physics engine and save."""
@@ -719,6 +1365,7 @@ def validate_and_save_configuration(config: Dict[str, Any], filename: str) -> bo
                 for error in errors:
                     print(f"  • {error}")
                 
+                # Note: This is outside the setup interface, so we can't use the enhanced input methods
                 if input("Save anyway? [y/N]: ").strip().lower() not in ['y', 'yes']:
                     return False
             else:
@@ -801,21 +1448,28 @@ def main():
     try:
         setup_interface = AdvancedSetupInterface()
         
-        # Select setup complexity level
-        mode = setup_interface.select_setup_mode()
+        # Show navigation help at the beginning
+        setup_interface.show_navigation_help()
         
-        # Create complete configuration
-        config = setup_interface.create_complete_configuration()
+        # Run the interactive setup flow
+        config = setup_interface.run_setup_flow()
         
-        # Get filename
-        suggested_name = f"coilgun_config_{mode.lower().replace('-', '_')}.json"
-        filename = input(f"\nConfiguration filename [{suggested_name}]: ").strip() or suggested_name
+        if not config:
+            print("\n❌ Setup cancelled or failed")
+            return
+        
+        # Extract key values for configuration building
+        mode = config.get('setup_mode', 'Advanced')
+        filename = config.get('config_filename', f"coilgun_config_{mode.lower().replace('-', '_')}.json")
         if not filename.endswith('.json'):
             filename += '.json'
         
+        # Build complete configuration from flow results
+        complete_config = setup_interface.build_configuration_from_flow(config)
+        
         # Validate and save
-        if validate_and_save_configuration(config, filename):
-            print_configuration_summary(config, mode)
+        if validate_and_save_configuration(complete_config, filename):
+            print_configuration_summary(complete_config, mode)
             
             print(f"\n🚀 Configuration created successfully!")
             print(f"\nTo run simulation:")

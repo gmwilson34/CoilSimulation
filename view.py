@@ -9,7 +9,6 @@ through the new modular system but can still be imported from view.py.
 """
 
 # Import everything from the new view package for backward compatibility
-from viewer import *
 from viewer.engine import CoilgunVisualizationEngine
 
 # Import the main classes and functions with their original names
@@ -151,11 +150,7 @@ def main():
         print(f"  - Max force: {viz_engine.simulation_params.get('max_force', 0):.2f} N")
         print(f"  - Simulation time: {viz_engine.simulation_params.get('simulation_time', 0)*1000:.2f} ms")
         
-        # Create quick analysis using actual data
-        print("\nCreating quick analysis using actual simulation data...")
-        viz_engine.create_quick_analysis()
-        
-        # Launch interactive menu
+        # Launch interactive menu without automatic quick analysis
         viz_engine.interactive_menu()
     else:
         print("⚠ No simulation data found. Please run a simulation first.")

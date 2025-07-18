@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any
 
 from .core import BaseVisualizer, CoilGeometry, VISUALIZATION_CONSTANTS
 from .fields import MagneticFieldCalculator
+from .plots import ContourPlotter
 
 
 class AnimationEngine(BaseVisualizer):
@@ -141,6 +142,18 @@ class AnimationEngine(BaseVisualizer):
         z_range = VISUALIZATION_CONSTANTS['DEFAULT_Z_RANGE']
         r_range = VISUALIZATION_CONSTANTS['DEFAULT_R_RANGE']
         
+        def create_safe_levels(data, num_levels=15):
+            data_min, data_max = np.min(data), np.max(data)
+            if np.abs(data_max - data_min) < 1e-15:
+                if np.abs(data_max) < 1e-15:
+                    levels = np.linspace(-1e-10, 1e-10, num_levels)
+                else:
+                    eps = np.abs(data_max) * 1e-6
+                    levels = np.linspace(data_max - eps, data_max + eps, num_levels)
+            else:
+                levels = np.linspace(data_min, data_max, num_levels)
+            return levels
+        
         def animate(frame_idx):
             if frame_idx >= len(current_data):
                 return
@@ -168,7 +181,7 @@ class AnimationEngine(BaseVisualizer):
             
             # Plot 1: Axial field component
             if show_contours:
-                levels = np.linspace(Bz.min(), Bz.max(), 15)
+                levels = create_safe_levels(Bz, num_levels=15)
                 im1 = ax1.contourf(Z_mm, R_mm, Bz, levels=levels, cmap='RdBu_r')
                 ax1.contour(Z_mm, R_mm, Bz, levels=levels, colors='black', 
                            linewidths=0.5, alpha=0.3)
@@ -182,7 +195,7 @@ class AnimationEngine(BaseVisualizer):
             
             # Plot 2: Field magnitude
             if show_contours:
-                levels_mag = np.linspace(0, B_magnitude.max(), 15)
+                levels_mag = create_safe_levels(B_magnitude, num_levels=15)
                 im2 = ax2.contourf(Z_mm, R_mm, B_magnitude, levels=levels_mag, cmap='plasma')
                 ax2.contour(Z_mm, R_mm, B_magnitude, levels=levels_mag, colors='black',
                            linewidths=0.5, alpha=0.3)

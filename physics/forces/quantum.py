@@ -3,6 +3,15 @@ Quantum Force Calculations
 
 This module implements quantum mechanical force corrections including
 Casimir forces, zero-point energy effects, and quantum tunneling.
+
+WARNING: These effects are negligible for macroscopic coilgun simulations
+and are disabled by default. Enable only for nanoscale simulations where
+gap sizes and projectile dimensions are < 100 nm.
+
+For typical coilgun parameters:
+- Casimir forces: ~pN for mm gaps (negligible)
+- Tunneling probability: ~0 for macroscopic objects  
+- Formulas are approximate and not experimentally validated for these applications
 """
 
 import numpy as np
@@ -27,20 +36,51 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         """Initialize quantum force calculator."""
         super().__init__(config, field_calculator, materials)
         
-        # QUANTUM PHYSICS PARAMETERS
-        self.include_quantum_effects = config.get('quantum_physics', {}).get('enable_quantum_forces', True)
-        self.casimir_force_enabled = config.get('quantum_physics', {}).get('casimir_force', True)
-        self.quantum_tunneling_effects = config.get('quantum_physics', {}).get('quantum_tunneling', True)
-        self.zero_point_energy_effects = config.get('quantum_physics', {}).get('zero_point_energy', True)
+        # QUANTUM PHYSICS PARAMETERS - DISABLED BY DEFAULT
+        # Quantum effects are negligible for macroscopic coilgun simulations
+        # Only enable for nanoscale simulations where gap sizes < 100 nm
+        self.include_quantum_effects = config.get('quantum_physics', {}).get('enable_quantum_forces', False)
+        self.casimir_force_enabled = config.get('quantum_physics', {}).get('casimir_force', False)
+        self.quantum_tunneling_effects = config.get('quantum_physics', {}).get('quantum_tunneling', False)
+        self.zero_point_energy_effects = config.get('quantum_physics', {}).get('zero_point_energy', False)
+        
+        # Scale checking for quantum effects applicability
+        self.nanoscale_threshold = 100e-9  # 100 nm - below this, quantum effects may be relevant
+        self.is_nanoscale_simulation = self._check_nanoscale_applicability()
         
         if self.include_quantum_effects:
+            if not self.is_nanoscale_simulation:
+                print("⚠️  WARNING: Quantum effects enabled for macroscopic simulation!")
+                print("   Quantum forces are negligible for mm-scale gaps and macro projectiles.")
+                print("   Consider disabling quantum effects for better performance.")
             self._initialize_quantum_force_models()
         
         print(f"🔬 Quantum force calculator initialized")
-        print(f"   - Quantum effects: {'✓' if self.include_quantum_effects else '✗'}")
-        print(f"   - Casimir forces: {'✓' if self.casimir_force_enabled else '✗'}")
-        print(f"   - Zero-point energy: {'✓' if self.zero_point_energy_effects else '✗'}")
-        print(f"   - Quantum tunneling: {'✓' if self.quantum_tunneling_effects else '✗'}")
+        print(f"   - Quantum effects: {'✓' if self.include_quantum_effects else '✗ (disabled by default)'}")
+        print(f"   - Nanoscale regime: {'✓' if self.is_nanoscale_simulation else '✗'}")
+        if self.include_quantum_effects:
+            print(f"   - Casimir forces: {'✓' if self.casimir_force_enabled else '✗'}")
+            print(f"   - Zero-point energy: {'✓' if self.zero_point_energy_effects else '✗'}")
+            print(f"   - Quantum tunneling: {'✓' if self.quantum_tunneling_effects else '✗'}")
+    
+    def _check_nanoscale_applicability(self) -> bool:
+        """
+        Check if the simulation is in the nanoscale regime where quantum effects matter.
+        
+        Returns:
+            True if gaps and dimensions are small enough for quantum effects
+        """
+        # Check typical gap size (coil-projectile separation)
+        typical_gap = abs(self.field_calc.coil_radius - self.proj_radius)
+        
+        # Check projectile dimensions
+        projectile_size = min(self.proj_radius, self.proj_length)
+        
+        # Quantum effects only relevant for nanoscale dimensions
+        is_nanoscale = (typical_gap < self.nanoscale_threshold or 
+                       projectile_size < self.nanoscale_threshold)
+        
+        return is_nanoscale
     
     def _initialize_quantum_force_models(self):
         """Initialize quantum mechanical force corrections."""
@@ -69,11 +109,21 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         """
         Calculate total quantum force corrections.
         
+        WARNING: These calculations use approximate formulas and are only 
+        meaningful for nanoscale simulations. For typical coilgun parameters:
+        - Casimir forces: ~pN for mm gaps (negligible)
+        - Tunneling: ~0 for macroscopic objects
+        - Zero-point energy: Highly approximate estimates
+        
         Returns:
             Tuple of (total_quantum_force, force_breakdown)
         """
         if not self.include_quantum_effects:
             return 0.0, {}
+        
+        # Early return for macroscopic simulations
+        if not self.is_nanoscale_simulation:
+            return 0.0, {'warning': 'quantum_effects_disabled_for_macroscopic_scale'}
         
         force_breakdown = {}
         total_quantum_force = 0.0
@@ -104,6 +154,10 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         force_breakdown['vacuum_stress'] = vacuum_stress_force
         total_quantum_force += vacuum_stress_force
         
+        # Add magnitude check - warn if forces are negligible
+        if abs(total_quantum_force) < 1e-12:  # 1 pN threshold
+            force_breakdown['magnitude_warning'] = 'quantum_forces_negligible'
+        
         return total_quantum_force, force_breakdown
     
     def _calculate_casimir_force(self, position: float, velocity: float) -> float:
@@ -112,6 +166,13 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         
         F_casimir = -π²ħc/(240 * d⁴) * A
         where d is the separation distance and A is the area.
+        
+        WARNING: This formula is approximate and only valid for:
+        - Perfect conductor surfaces
+        - Gap sizes much smaller than characteristic system size
+        - Non-relativistic velocities
+        
+        For mm-scale gaps typical in coilguns, forces are ~pN (negligible).
         """
         # Distance from projectile to coil inner surface
         distance = abs(self.field_calc.coil_radius - self.proj_radius)
@@ -120,16 +181,20 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         min_distance = 1e-9  # 1 nm
         distance = max(distance, min_distance)
         
-        # Effective interaction area
+        # Check if gap is too large for meaningful Casimir force
+        if distance > 1e-6:  # 1 μm
+            # For gaps > 1 μm, Casimir force is negligible
+            return 0.0
+        
+        # Effective interaction area (simplified cylindrical approximation)
         interaction_area = 2 * np.pi * self.proj_radius * self.proj_length
         
         # Casimir force (attractive, hence negative)
+        # Note: This is the idealized formula for perfect conductors
         casimir_force = -self.casimir_coefficient * interaction_area / (distance**4)
         
-        # Apply velocity-dependent corrections (relativistic quantum field theory)
-        if abs(velocity) > 1e-6:
-            velocity_factor = 1.0 - (velocity / PhysicsConstants.C)**2
-            casimir_force *= velocity_factor
+        # Remove ad-hoc velocity corrections - not physically justified
+        # for the simple parallel plate/cylinder approximation used here
         
         return NumericalUtils.safe_numerical_operation(casimir_force, "casimir_force")
     
@@ -137,14 +202,23 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         """
         Calculate force corrections due to zero-point energy fluctuations.
         
+        WARNING: This is a highly approximate calculation. Zero-point energy 
+        contributions to macroscopic forces are not well established and 
+        depend heavily on cutoff frequency assumptions.
+        
         Zero-point energy affects the electromagnetic field energy density,
         leading to additional force contributions.
         """
+        # For macroscopic systems, zero-point corrections are negligible
+        if not self.is_nanoscale_simulation:
+            return 0.0
+        
         # Magnetic field energy density
         B_field = self.field_calc.magnetic_field_solenoid_on_axis(position, current)
         magnetic_energy_density = B_field**2 / (2 * PhysicsConstants.MU_0)
         
         # Zero-point energy density (cutoff at characteristic frequency)
+        # NOTE: Cutoff frequency is arbitrary and affects results significantly
         hbar = 1.054571817e-34  # J⋅s
         zero_point_density = (hbar * self.zero_point_cutoff_frequency) / (2 * PhysicsConstants.C**3)
         
@@ -158,8 +232,16 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         """
         Calculate force corrections due to quantum tunneling through magnetic barriers.
         
+        WARNING: For macroscopic objects (mass > 1e-15 kg), tunneling probability 
+        is effectively zero due to exponential suppression. This calculation is 
+        only meaningful for nanoscale particles.
+        
         Quantum tunneling affects the effective permeability and thus the forces.
         """
+        # For macroscopic projectiles, tunneling is negligible
+        if self.proj_mass > 1e-15:  # kg - atomic scale threshold
+            return 0.0
+        
         # Magnetic field strength determines barrier height
         B_field = self.field_calc.magnetic_field_solenoid_on_axis(position, current)
         
@@ -173,9 +255,16 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         # Tunneling probability (simplified WKB approximation)
         if de_broglie_wavelength > self.quantum_mechanical_threshold:
             kappa = np.sqrt(2 * self.proj_mass * barrier_height) / 1.054571817e-34
-            tunneling_prob = np.exp(-2 * kappa * self.proj_length)
+            barrier_width = self.proj_length  # Approximate barrier width
             
-            # Force correction due to tunneling
+            # WKB tunneling probability - exponentially suppressed for macro objects
+            tunneling_prob = np.exp(-2 * kappa * barrier_width)
+            
+            # For typical coilgun parameters, this probability is ~0 for macro objects
+            if tunneling_prob < 1e-100:  # Numerical cutoff
+                return 0.0
+            
+            # Force correction due to tunneling (highly approximate)
             tunneling_force = tunneling_prob * self.vacuum_fluctuation_amplitude * np.sign(velocity)
         else:
             tunneling_force = 0.0
@@ -186,9 +275,18 @@ class QuantumForceCalculator(BaseElectromagneticForces):
         """
         Calculate quantum vacuum stress tensor contributions to force.
         
+        WARNING: This calculation is highly speculative and approximate.
+        Quantum vacuum stress effects on macroscopic forces are not 
+        experimentally established and involve significant theoretical 
+        uncertainties.
+        
         Quantum vacuum fluctuations contribute to the stress tensor,
         modifying the Maxwell stress calculation.
         """
+        # For macroscopic systems, vacuum stress corrections are negligible
+        if not self.is_nanoscale_simulation:
+            return 0.0
+        
         # Quantum vacuum energy density
         hbar_c = 1.054571817e-34 * PhysicsConstants.C
         vacuum_energy_density = hbar_c * self.zero_point_cutoff_frequency / (8 * np.pi**3)

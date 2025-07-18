@@ -21,7 +21,7 @@ class ProgressTracker:
     """
     
     def __init__(self, t_span: tuple, physics_engine: Optional[CoilgunPhysicsEngine] = None,
-                 update_interval: float = None, bar_width: int = None):
+                 update_interval: Optional[float] = None, bar_width: Optional[int] = None):
         """
         Initialize enhanced progress tracker.
         
@@ -129,6 +129,9 @@ class ProgressTracker:
     
     def _calculate_current_force(self, I: float, x: float, t: float, v: float = 0.0):
         """Calculate current force using appropriate physics method."""
+        if self.physics is None:
+            return 0.0
+            
         if hasattr(self.physics, 'magnetic_force_with_circuit_logic'):
             return self.physics.magnetic_force_with_circuit_logic(I, x, t, v)
         else:
@@ -170,18 +173,6 @@ class ProgressTracker:
                 new_warning = f"⚠  {warning}"
                 self.displayed_warnings.add(warning)
                 break
-        
-        # Check for energy warnings from physics engine
-        if (not new_warning and self.physics and 
-            hasattr(self.physics, 'latest_energy_warning') and 
-            self.physics.latest_energy_warning and 
-            self.physics.latest_energy_warning != self.last_displayed_warning):
-            
-            if hasattr(self.physics, 'energy_warning_count'):
-                new_warning = f"⚠  Energy warning #{self.physics.energy_warning_count}: {self.physics.latest_energy_warning}"
-            else:
-                new_warning = f"⚠  Energy warning: {self.physics.latest_energy_warning}"
-            self.last_displayed_warning = self.physics.latest_energy_warning
         
         # Display new warning
         if new_warning:
@@ -240,8 +231,8 @@ class ProgressTracker:
         
         diagnostics_parts = [
             f"I={I:.1f}A",
-            f"x={x*1000:.1f}mm", 
-            f"v={v:.5f}m/s"
+            f"x={x*1000:.3f}mm",  # Higher precision for position
+            f"v={v:.6f}m/s"       # Higher precision for velocity
         ]
         
         return " | ".join(diagnostics_parts)

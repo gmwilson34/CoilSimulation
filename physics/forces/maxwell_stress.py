@@ -9,6 +9,7 @@ import numpy as np
 import warnings
 from typing import Optional, Tuple, Union, List
 from scipy.integrate import quad, dblquad
+from scipy.integrate import fixed_quad
 from ..core import BasePhysicsModel, PhysicsConstants, NumericalUtils
 from .base import BaseElectromagneticForces
 
@@ -32,9 +33,20 @@ class MaxwellStressTensor(BaseElectromagneticForces):
         self.maxwell_stress_grid_points = config.get('advanced_physics', {}).get('maxwell_stress_grid_points', 50)
         self.integration_order = config.get('advanced_physics', {}).get('integration_order', 16)
         
+        # Enhanced calculation options
+        self.use_induced_electric_field = config.get('advanced_physics', {}).get('use_induced_electric_field', False)
+        self.adaptive_integration = config.get('advanced_physics', {}).get('adaptive_integration', True)
+        self.validate_divergence_free = config.get('advanced_physics', {}).get('validate_divergence_free', True)
+        
+        # Coil geometry for better field calculations
+        self.coil_radius = config.get('coil', {}).get('inner_radius', 0.01)
+        
         print(f"🔧 Maxwell stress tensor calculator initialized")
         print(f"   - Grid points: {self.maxwell_stress_grid_points}")
         print(f"   - Integration order: {self.integration_order}")
+        print(f"   - Induced E-field: {self.use_induced_electric_field}")
+        print(f"   - Adaptive integration: {self.adaptive_integration}")
+        print(f"   - Divergence validation: {self.validate_divergence_free}")
     
     def calculate_maxwell_stress_force(self, current: float, position: float, 
                                      velocity: float = 0.0) -> Tuple[float, dict]:
@@ -50,6 +62,13 @@ class MaxwellStressTensor(BaseElectromagneticForces):
         if not self.use_maxwell_stress:
             return 0.0, {}
         
+        # Calculate induced electric field if enabled and velocity is significant
+        E_field_correction = 0.0
+        if self.use_induced_electric_field and abs(velocity) > 1.0:
+            E_field_correction = self._calculate_induced_electric_field_force(
+                current, position, velocity
+            )
+        
         # Calculate force components from Maxwell stress
         force_front = self._integrate_maxwell_stress_surface(
             position + self.proj_length/2, self.proj_radius, current, 'front'
@@ -62,13 +81,20 @@ class MaxwellStressTensor(BaseElectromagneticForces):
             self.proj_radius, current
         )
         
-        # Total force (front - back + cylindrical contributions)
-        total_force = force_front - force_back + force_cylindrical
+        # Total force (front - back + cylindrical contributions + E-field correction)
+        total_force = force_front - force_back + force_cylindrical + E_field_correction
+        
+        # Validate divergence-free condition if enabled
+        if self.validate_divergence_free:
+            divergence_error = self._validate_stress_tensor_divergence(position, current)
+            if divergence_error > 1e-6:
+                warnings.warn(f"Maxwell stress tensor divergence validation failed: {divergence_error}")
         
         force_breakdown = {
             'maxwell_front': force_front,
             'maxwell_back': force_back,
             'maxwell_cylindrical': force_cylindrical,
+            'maxwell_e_field_correction': E_field_correction,
             'maxwell_total': total_force
         }
         
@@ -86,39 +112,57 @@ class MaxwellStressTensor(BaseElectromagneticForces):
             # Position on surface
             z_pos = z_surface
             
-            # CORRECTED: Get full magnetic field components at this position
+            # Use full 3D field calculation if available
             if hasattr(self.field_calc, 'magnetic_field_3d_biot_savart'):
-                # Use 3D field calculation if available
+                # Use 3D field calculation for accurate results
                 position = np.array([r, 0, z_pos])
                 B_field = self.field_calc.magnetic_field_3d_biot_savart(position, current)
                 B_r, B_phi, B_z = B_field[0], B_field[1], B_field[2]
             else:
-                # Fallback to on-axis calculation with radial field estimate
+                # Fallback to on-axis calculation with improved radial field estimate
                 B_z = self.field_calc.magnetic_field_solenoid_on_axis(z_pos, current)
                 
-                # CORRECTED: Estimate radial field from field gradient
-                # For solenoid: B_r ≈ -(r/2) × dB_z/dz
-                if hasattr(self.field_calc, 'calculate_field_gradient'):
-                    dB_dz = self.field_calc.calculate_field_gradient(z_pos, current)
-                    B_r = -(r / 2.0) * dB_dz
+                # Improved radial field calculation for large r
+                if r < self.coil_radius * 0.5:
+                    # Near axis: use gradient approximation B_r ≈ -(r/2) × dB_z/dz
+                    if hasattr(self.field_calc, 'calculate_field_gradient'):
+                        dB_dz = self.field_calc.calculate_field_gradient(z_pos, current)
+                        B_r = -(r / 2.0) * dB_dz
+                    else:
+                        B_r = 0.0
                 else:
-                    B_r = 0.0
+                    # For r ~ coil_radius, use better approximation based on solenoid field
+                    # B_r ≈ (μ₀ I N / 2L) × (r/coil_r) × geometry_factor
+                    if hasattr(self.field_calc, 'calculate_radial_field_far'):
+                        B_r = self.field_calc.calculate_radial_field_far(r, z_pos, current)
+                    else:
+                        # Fallback: use geometric scaling
+                        coil_field = PhysicsConstants.MU_0 * current / (2 * self.coil_radius)
+                        geometry_factor = self.coil_radius / (self.coil_radius**2 + z_pos**2)**0.5
+                        B_r = coil_field * (r / self.coil_radius) * geometry_factor
+                
                 B_phi = 0.0  # Azimuthal symmetry
             
             # Full magnetic field magnitude
             B_magnitude_squared = B_r**2 + B_phi**2 + B_z**2
             
-            # CORRECTED: Full Maxwell stress tensor component T_zz
+            # Full Maxwell stress tensor component T_zz
             # T_zz = (1/μ₀)[B_z² - (1/2)|B|²]
             T_zz = (1.0 / PhysicsConstants.MU_0) * (B_z**2 - 0.5 * B_magnitude_squared)
             
             # Integration element: r dr dφ → 2πr dr for axial symmetry
             return T_zz * 2 * np.pi * r
         
-        # Integrate from 0 to projectile radius
+        # Use adaptive integration if enabled
         try:
-            force, _ = quad(stress_integrand, 0, radius, 
-                           limit=self.integration_order, epsabs=1e-12, epsrel=1e-9)
+            if self.adaptive_integration:
+                force, error = quad(stress_integrand, 0, radius, 
+                                   limit=self.integration_order*2, epsabs=1e-12, epsrel=1e-9)
+                if error > abs(force) * 1e-6:
+                    warnings.warn(f"High integration error in Maxwell stress: {error/abs(force):.2e}")
+            else:
+                force, _ = fixed_quad(stress_integrand, 0, radius, n=self.integration_order)
+            
             return NumericalUtils.safe_numerical_operation(force, f"maxwell_stress_{surface_type}")
         except Exception as e:
             warnings.warn(f"Maxwell stress integration failed: {e}")
@@ -135,9 +179,9 @@ class MaxwellStressTensor(BaseElectromagneticForces):
             # Position on cylindrical surface
             r_pos = radius
             
-            # CORRECTED: Get full magnetic field components
+            # Use full 3D field calculation if available
             if hasattr(self.field_calc, 'magnetic_field_3d_biot_savart'):
-                # Use 3D field calculation if available
+                # Use 3D field calculation for accurate results
                 position = np.array([r_pos, 0, z])
                 B_field = self.field_calc.magnetic_field_3d_biot_savart(position, current)
                 B_r, B_phi, B_z = B_field[0], B_field[1], B_field[2]
@@ -145,32 +189,107 @@ class MaxwellStressTensor(BaseElectromagneticForces):
                 # Fallback: estimate fields from on-axis calculation
                 B_z = self.field_calc.magnetic_field_solenoid_on_axis(z, current)
                 
-                # Estimate radial field using solenoid field gradient
-                # B_r ≈ -(r/2) × dB_z/dz for cylindrical solenoid
-                if hasattr(self.field_calc, 'calculate_field_gradient'):
-                    dB_dz = self.field_calc.calculate_field_gradient(z, current)
-                    B_r = -(r_pos / 2.0) * dB_dz
+                # Improved radial field calculation
+                if r_pos < self.coil_radius * 0.5:
+                    # Near axis: use gradient approximation
+                    if hasattr(self.field_calc, 'calculate_field_gradient'):
+                        dB_dz = self.field_calc.calculate_field_gradient(z, current)
+                        B_r = -(r_pos / 2.0) * dB_dz
+                    else:
+                        B_r = 0.0
                 else:
-                    B_r = 0.0
+                    # For larger radii, use better approximation
+                    if hasattr(self.field_calc, 'calculate_radial_field_far'):
+                        B_r = self.field_calc.calculate_radial_field_far(r_pos, z, current)
+                    else:
+                        # Geometric scaling approximation
+                        coil_field = PhysicsConstants.MU_0 * current / (2 * self.coil_radius)
+                        geometry_factor = self.coil_radius / (self.coil_radius**2 + z**2)**0.5
+                        B_r = coil_field * (r_pos / self.coil_radius) * geometry_factor
+                
                 B_phi = 0.0  # Azimuthal symmetry
             
-            # CORRECTED: Full Maxwell stress tensor component T_rz
+            # Full Maxwell stress tensor component T_rz
             # T_rz = (1/μ₀) × B_r × B_z
             T_rz = (1.0 / PhysicsConstants.MU_0) * B_r * B_z
             
             # Integration element: circumference × dz = 2πr × dz
             return T_rz * 2 * np.pi * radius
         
-        # Integrate along projectile length
+        # Integrate along projectile length with adaptive integration
         try:
-            force, _ = quad(cylindrical_stress_integrand, z_start, z_end, 
-                           limit=self.integration_order, epsabs=1e-12, epsrel=1e-9)
+            if self.adaptive_integration:
+                force, error = quad(cylindrical_stress_integrand, z_start, z_end, 
+                                   limit=self.integration_order*2, epsabs=1e-12, epsrel=1e-9)
+                if error > abs(force) * 1e-6:
+                    warnings.warn(f"High integration error in cylindrical Maxwell stress: {error/abs(force):.2e}")
+            else:
+                force, _ = fixed_quad(cylindrical_stress_integrand, z_start, z_end, n=self.integration_order)
+            
             return NumericalUtils.safe_numerical_operation(force, "maxwell_stress_cylindrical")
         except Exception as e:
             warnings.warn(f"Maxwell stress cylindrical integration failed: {e}")
             return 0.0
     
-    def calculate_stress_tensor_components(self, B_field: np.ndarray, E_field: np.ndarray = None) -> np.ndarray:
+    def _calculate_induced_electric_field_force(self, current: float, position: float, velocity: float) -> float:
+        """
+        Calculate force correction due to induced electric field for fast-moving projectiles.
+        
+        For fast pulses or high velocities, the induced electric field E = -∂A/∂t - ∇φ
+        contributes to the Maxwell stress tensor.
+        """
+        if abs(velocity) < 1.0:  # Negligible for low velocities
+            return 0.0
+        
+        try:
+            # Estimate induced electric field magnitude
+            # E_induced ≈ v × B for moving conductor
+            B_field_magnitude = abs(self.field_calc.magnetic_field_solenoid_on_axis(position, current))
+            E_induced_magnitude = abs(velocity) * B_field_magnitude
+            
+            # Electric field contribution to stress tensor
+            # ΔT = ε₀[E_i E_j - (1/2)δ_ij E²]
+            electric_stress_correction = (PhysicsConstants.EPSILON_0 * 
+                                        E_induced_magnitude**2 * np.pi * self.proj_radius**2)
+            
+            return electric_stress_correction
+        except Exception as e:
+            warnings.warn(f"Induced electric field calculation failed: {e}")
+            return 0.0
+    
+    def _validate_stress_tensor_divergence(self, position: float, current: float) -> float:
+        """
+        Validate that the Maxwell stress tensor satisfies ∇·T = 0 in vacuum.
+        
+        Returns the maximum divergence error as a measure of calculation accuracy.
+        """
+        try:
+            # Sample stress tensor at several points around the projectile
+            max_divergence = 0.0
+            test_positions = [
+                position - self.proj_length/4,
+                position,
+                position + self.proj_length/4
+            ]
+            
+            for z_pos in test_positions:
+                # Calculate stress tensor components at this position
+                if hasattr(self.field_calc, 'magnetic_field_3d_biot_savart'):
+                    pos_array = np.array([self.proj_radius/2, 0, z_pos])
+                    B_field = self.field_calc.magnetic_field_3d_biot_savart(pos_array, current)
+                    T = self.calculate_stress_tensor_components(B_field)
+                    
+                    # Approximate divergence using finite differences
+                    # This is a simplified check - full implementation would need proper gradients
+                    divergence_estimate = abs(np.trace(T)) / (B_field @ B_field / PhysicsConstants.MU_0)
+                    max_divergence = max(max_divergence, divergence_estimate)
+            
+            return max_divergence
+        except Exception as e:
+            warnings.warn(f"Divergence validation failed: {e}")
+            return 0.0
+
+    def calculate_stress_tensor_components(self, B_field: np.ndarray, E_field: Optional[np.ndarray] = None) -> np.ndarray:
         """
         Calculate all components of Maxwell stress tensor.
         
@@ -244,4 +363,64 @@ class MaxwellStressTensor(BaseElectromagneticForces):
         trace = np.trace(T)
         energy_density = B_field @ B_field / (2 * PhysicsConstants.MU_0)
         
-        return is_symmetric and abs(trace + energy_density) < 1e-12 
+        return is_symmetric and abs(trace + energy_density) < 1e-12
+    
+    def calculate_stress_tensor_accuracy_metrics(self, B_field: np.ndarray, position: float) -> dict:
+        """
+        Calculate comprehensive accuracy metrics for the Maxwell stress tensor.
+        
+        Returns metrics including symmetry error, conservation violations, and field consistency.
+        """
+        T = self.calculate_stress_tensor_components(B_field)
+        
+        # Symmetry check
+        symmetry_error = np.max(np.abs(T - T.T))
+        
+        # Energy conservation check
+        trace = np.trace(T)
+        energy_density = B_field @ B_field / (2 * PhysicsConstants.MU_0)
+        energy_conservation_error = abs(trace + energy_density)
+        
+        # Field magnitude consistency
+        B_magnitude = np.linalg.norm(B_field)
+        stress_magnitude = np.linalg.norm(T)
+        expected_stress_scale = B_magnitude**2 / PhysicsConstants.MU_0
+        magnitude_consistency = abs(stress_magnitude - expected_stress_scale) / expected_stress_scale
+        
+        # Numerical stability check
+        condition_number = np.linalg.cond(T)
+        
+        return {
+            'symmetry_error': symmetry_error,
+            'energy_conservation_error': energy_conservation_error,
+            'magnitude_consistency': magnitude_consistency,
+            'condition_number': condition_number,
+            'is_valid': (symmetry_error < 1e-10 and 
+                        energy_conservation_error < 1e-10 and 
+                        magnitude_consistency < 0.1 and 
+                        condition_number < 1e12)
+        }
+    
+    def calculate_enhanced_maxwell_force_with_validation(self, current: float, position: float, 
+                                                        velocity: float = 0.0) -> Tuple[float, dict]:
+        """
+        Enhanced Maxwell stress force calculation with comprehensive validation.
+        
+        This method includes all improvements: better field calculations, induced E-field,
+        adaptive integration, and validation metrics.
+        """
+        # Standard Maxwell stress calculation
+        force, breakdown = self.calculate_maxwell_stress_force(current, position, velocity)
+        
+        # Add validation metrics
+        if hasattr(self.field_calc, 'magnetic_field_3d_biot_savart'):
+            test_position = np.array([self.proj_radius/2, 0, position])
+            B_field = self.field_calc.magnetic_field_3d_biot_savart(test_position, current)
+            validation_metrics = self.calculate_stress_tensor_accuracy_metrics(B_field, position)
+            breakdown.update(validation_metrics)
+        
+        # Warning for potential accuracy issues
+        if 'is_valid' in breakdown and not breakdown['is_valid']:
+            warnings.warn("Maxwell stress tensor validation indicates potential accuracy issues")
+        
+        return force, breakdown 

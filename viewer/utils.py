@@ -267,11 +267,14 @@ def validate_simulation_data(simulation_results):
         # Check for NaN or infinite values
         for key, value in simulation_results.items():
             if isinstance(value, (list, np.ndarray)):
-                arr = np.array(value)
-                if np.any(np.isnan(arr)):
-                    validation['warnings'].append(f"NaN values found in {key}")
-                if np.any(np.isinf(arr)):
-                    validation['warnings'].append(f"Infinite values found in {key}")
+                try:
+                    arr = np.array(value, dtype=float)
+                    if np.any(np.isnan(arr)):
+                        validation['warnings'].append(f"NaN values found in {key}")
+                    if np.any(np.isinf(arr)):
+                        validation['warnings'].append(f"Infinite values found in {key}")
+                except (ValueError, TypeError):
+                    validation['warnings'].append(f"Non-numeric data in {key}")
         
         # Data quality metrics
         validation['data_quality']['time_span'] = max(time_data) - min(time_data) if time_data else 0
@@ -499,33 +502,50 @@ def load_actual_simulation_data(results_dir="simulation_results"):
     csv_file = results_path / "enhanced_single_stage_data.csv"
     if csv_file.exists():
         print(f"Loading CSV data: {csv_file}")
-        df = pd.read_csv(csv_file)
-        
-        # Convert to dictionaries for compatibility
-        simulation_data['time_series'] = {
-            'time': df['time'].tolist(),
-            'charge': df['charge'].tolist(),
-            'current': df['current'].tolist(),
-            'position': df['position'].tolist(),
-            'velocity': df['velocity'].tolist(),
-            'inductance': df['inductance'].tolist(),
-            'force_total': df['force_total'].tolist(),
-            'energy_kinetic': df['energy_kinetic'].tolist(),
-            'energy_capacitor': df['energy_capacitor'].tolist()
-        }
-        
-        # Add convenient aliases for backward compatibility
-        simulation_data['time'] = df['time'].tolist()
-        simulation_data['current'] = df['current'].tolist()
-        simulation_data['force'] = df['force_total'].tolist()
-        simulation_data['position'] = df['position'].tolist()
-        simulation_data['velocity'] = df['velocity'].tolist()
-        
-        print(f"Loaded {len(df)} data points from CSV")
-        print(f"Time range: {df['time'].min():.6f} to {df['time'].max():.6f} s")
-        print(f"Current range: {df['current'].min():.2f} to {df['current'].max():.2f} A")
-        print(f"Force range: {df['force_total'].min():.6f} to {df['force_total'].max():.2f} N")
-        print(f"Position range: {df['position'].min():.6f} to {df['position'].max():.6f} m")
+        try:
+            df = pd.read_csv(csv_file)
+            
+            # Coerce columns to numeric, replacing invalid values with NaN
+            numeric_columns = ['time', 'charge', 'current', 'position', 'velocity', 
+                               'inductance', 'force_total', 'energy_kinetic', 'energy_capacitor']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Drop any rows with NaN values in critical columns
+            critical_columns = ['time', 'current', 'position', 'velocity', 'force_total']
+            df = df.dropna(subset=[col for col in critical_columns if col in df.columns])
+            
+            if df.empty:
+                raise ValueError("All data rows contained invalid values after coercion")
+            
+            # Convert to dictionaries for compatibility
+            simulation_data['time_series'] = {
+                'time': df['time'].tolist(),
+                'charge': df['charge'].tolist(),
+                'current': df['current'].tolist(),
+                'position': df['position'].tolist(),
+                'velocity': df['velocity'].tolist(),
+                'inductance': df['inductance'].tolist(),
+                'force_total': df['force_total'].tolist(),
+                'energy_kinetic': df['energy_kinetic'].tolist(),
+                'energy_capacitor': df['energy_capacitor'].tolist()
+            }
+            
+            # Add convenient aliases for backward compatibility
+            simulation_data['time'] = df['time'].tolist()
+            simulation_data['current'] = df['current'].tolist()
+            simulation_data['force'] = df['force_total'].tolist()
+            simulation_data['position'] = df['position'].tolist()
+            simulation_data['velocity'] = df['velocity'].tolist()
+            
+            print(f"Loaded {len(df)} data points from CSV")
+            print(f"Time range: {df['time'].min():.6f} to {df['time'].max():.6f} s")
+            print(f"Current range: {df['current'].min():.2f} to {df['current'].max():.2f} A")
+            print(f"Force range: {df['force_total'].min():.6f} to {df['force_total'].max():.2f} N")
+            print(f"Position range: {df['position'].min():.6f} to {df['position'].max():.6f} m")
+        except Exception as e:
+            print(f"Error loading CSV data: {e}")
     
     # Load JSON results data
     json_file = results_path / "enhanced_single_stage_results.json"

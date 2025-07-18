@@ -49,6 +49,10 @@ class EnhancedCoilgunSolver:
             raise SolverError(f"Configuration validation failed: {errors}")
         
         self.config = config
+
+        # Add this to use config's solver settings
+        solver_cfg_dict = self.config.get('solver', {}) or self.config.get('simulation', {})
+        self.solver_config = solver_config or SolverConfig({'solver': solver_cfg_dict})
         
         # Initialize enhanced simulation objects
         self.single_stage_sim = None
@@ -71,7 +75,7 @@ class EnhancedCoilgunSolver:
         if self.solver_config.get('general.show_config_summary', True):
             print_config_summary(self.config)
     
-    def run_single_stage(self, use_enhanced_solver: bool = None, **kwargs) -> Dict[str, Any]:
+    def run_single_stage(self, use_enhanced_solver: Optional[bool] = None, **kwargs) -> Dict[str, Any]:
         """
         Run single stage simulation with enhanced physics.
         
@@ -118,7 +122,7 @@ class EnhancedCoilgunSolver:
         
         return results
     
-    def run_multi_stage(self, use_enhanced_solver: bool = None, **kwargs) -> Dict[str, Any]:
+    def run_multi_stage(self, use_enhanced_solver: Optional[bool] = None, **kwargs) -> Dict[str, Any]:
         """
         Run enhanced multi-stage simulation.
         

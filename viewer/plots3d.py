@@ -12,6 +12,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib.colors import Normalize
 from typing import Optional, List, Tuple, Dict, Any
 import time
+import gc
 
 from .core import BaseVisualizer
 from .fields import FieldLineTracer
@@ -133,7 +134,8 @@ class Plot3DVisualizer(BaseVisualizer):
         if interactive:
             plt.show()
         else:
-            plt.close()
+            plt.close(fig)
+            gc.collect()  # Free memory after closing
     
     def _create_simplified_3d_visualization(self, ax, current, show_coil=True, projectile_position=None):
         """

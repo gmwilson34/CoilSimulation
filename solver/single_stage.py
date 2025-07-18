@@ -264,13 +264,13 @@ class EnhancedSingleStageSimulation(BaseSolver):
         if show_progress:
             # Use enhanced progress tracker with physics monitoring
             tracker = ProgressTracker(t_span, self.physics, 
-                                    update_interval=0.02,  # 50 Hz update rate
+                                    update_interval=0.005,  # 200 Hz update rate for real-time position tracking
                                     bar_width=50)
             self.add_step_callback(tracker.update)
             return tracker
         else:
             # Use simple tracker for interface compatibility
-            return SimpleProgressTracker(t_span, update_frequency=50)
+            return SimpleProgressTracker(t_span, update_frequency=10)  # More frequent updates
     
     def _create_enhanced_ode_wrapper(self):
         """Create enhanced ODE wrapper with advanced physics integration."""
@@ -423,7 +423,7 @@ class EnhancedSingleStageSimulation(BaseSolver):
             raise SimulationError(f"Integration failed: {solution.message}")
         
         if verbose:
-            print("\n🔍 Analyzing enhanced simulation results...")
+            print("\n🔍 Analyzing results...")
         
         # Use enhanced analyzer for comprehensive results
         results = self.results_analyzer.analyze_solution(solution)
@@ -561,7 +561,7 @@ class EnhancedSingleStageSimulation(BaseSolver):
             with open(energy_file, 'w') as f:
                 json.dump(results['energy_conservation_analysis'], f, indent=2, default=str)
         
-        print(f"✓ Enhanced results saved to {output_dir}")
+        print(f"✓  Results saved to {output_dir}")
     
     def _print_enhanced_system_info(self):
         """Print enhanced system information."""
@@ -662,7 +662,7 @@ class EnhancedSingleStageSimulation(BaseSolver):
         if hasattr(self.physics, 'permeability_model'):
             perm_model = self.physics.permeability_model
             if hasattr(perm_model, 'print_cache_statistics'):
-                perm_model.print_cache_statistics()
+                pass  # Cache statistics printing disabled
         
         print("\n" + "="*60)
     

@@ -85,7 +85,7 @@ class PhysicsAnalyzer(BaseVisualizer):
         ax12 = fig.add_subplot(gs[3, 2])
         self._plot_performance_summary(ax12, results)
         
-        plt.tight_layout()
+        # Removed tight_layout to avoid warning with twinx axes; spacing handled by GridSpec
         self.save_figure(fig, save_path)
         plt.show()
     
@@ -109,7 +109,8 @@ class PhysicsAnalyzer(BaseVisualizer):
         
         self.apply_common_styling(ax, 'Force Component Decomposition', 
                                 'Time (ms)', 'Force (N)')
-        ax.legend(fontsize=8)
+        if ax.lines:
+            ax.legend(fontsize=8)
     
     def _plot_eddy_current_analysis(self, ax, t_ms, results):
         """Plot eddy current effects and skin depth."""
@@ -142,7 +143,8 @@ class PhysicsAnalyzer(BaseVisualizer):
                        label=label, alpha=0.8)
         
         self.apply_common_styling(ax, 'Power Analysis', 'Time (ms)', 'Power (W)')
-        ax.legend(fontsize=9)
+        if ax.lines:
+            ax.legend(fontsize=9)
     
     def _plot_energy_conservation(self, ax, t_ms, results):
         """Plot energy conservation tracking."""
@@ -163,7 +165,8 @@ class PhysicsAnalyzer(BaseVisualizer):
                 ax_twin.set_ylabel('Energy Error (%)', color='orange')
         
         self.apply_common_styling(ax, 'Energy Conservation', 'Time (ms)', 'Energy (J)')
-        ax.legend(fontsize=9)
+        if ax.lines:
+            ax.legend(fontsize=9)
     
     def _plot_magnetic_field_analysis(self, ax, t_ms, results):
         """Plot magnetic field and saturation analysis."""

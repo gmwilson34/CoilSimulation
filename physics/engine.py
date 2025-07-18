@@ -12,7 +12,7 @@ import time
 import warnings
 from typing import Dict, Any, Optional, Tuple, List
 
-from .core import BasePhysicsModel, PhysicsConstants, SafetyLimits, NumericalUtils
+from .core import BasePhysicsModel, PhysicsConstants, SafetyLimits, NumericalUtils, validate_physical_parameter
 from .materials import AdvancedMaterialProperties, AdvancedPermeabilityModel
 from .fields import AdvancedMagneticFieldCalculator
 from .forces import AdvancedElectromagneticForces, BaseElectromagneticForces, ForceAnalyzer
@@ -187,9 +187,22 @@ class CoilgunPhysicsEngine(BasePhysicsModel):
     def magnetic_field_on_axis_circular_loop(self, z: float, loop_radius: float, 
                                            current: float, loop_position: float = 0.0) -> float:
         """Calculate magnetic field on axis for a circular current loop."""
-        return self.field_calculator.magnetic_field_on_axis_circular_loop(
-            z, loop_radius, current, loop_position
-        )
+        # Use analytical formula directly since AdvancedMagneticFieldCalculator doesn't have this method
+        z_rel = z - loop_position
+        
+        # Handle special case at loop center
+        if abs(z_rel) < 1e-15:
+            return PhysicsConstants.MU_0 * current / (2.0 * loop_radius) if loop_radius > 0 else 0.0
+        
+        # General case using analytical formula
+        denominator = (loop_radius**2 + z_rel**2)**(3.0/2.0)
+        
+        if denominator < 1e-15:
+            return 0.0
+        
+        B_z = PhysicsConstants.MU_0 * current * loop_radius**2 / (2.0 * denominator)
+        
+        return NumericalUtils.safe_numerical_operation(B_z, "circular_loop_field")
     
     def magnetic_field_solenoid_on_axis(self, z: float, current: float) -> float:
         """Calculate magnetic field on solenoid axis."""
@@ -198,7 +211,24 @@ class CoilgunPhysicsEngine(BasePhysicsModel):
     def magnetic_field_finite_solenoid_on_axis(self, z: float, a: float, l: float, 
                                              N: int, current: float) -> float:
         """Accurate finite solenoid field calculation on axis."""
-        return self.field_calculator.magnetic_field_finite_solenoid_on_axis(z, a, l, N, current)
+        # Implement analytical finite solenoid formula directly
+        mu0 = PhysicsConstants.MU_0
+        n = N / l  # turns per meter
+        
+        # Distances to coil ends
+        z1 = z + l/2.0  # Distance to near end  
+        z2 = z - l/2.0  # Distance to far end
+        
+        # Exact analytical formula using cosines of end angles
+        r1 = np.sqrt(a**2 + z1**2)
+        r2 = np.sqrt(a**2 + z2**2)
+        
+        cos_beta1 = z1 / r1 if r1 > 1e-15 else 0.0
+        cos_beta2 = z2 / r2 if r2 > 1e-15 else 0.0
+        
+        B_z = (mu0 * n * current / 2.0) * (cos_beta1 - cos_beta2)
+        
+        return NumericalUtils.safe_numerical_operation(B_z, "finite_solenoid_field")
     
     # Force calculation methods (for compatibility)
     def magnetic_force_ferromagnetic(self, current: float, position: float, 
@@ -381,6 +411,186 @@ class CoilgunPhysicsEngine(BasePhysicsModel):
         else:
             print("✓ Configuration validation passed")
     
+    def get_performance_metrics(self) -> Dict[str, Any]:
+        """Get comprehensive performance metrics for the physics engine."""
+        metrics = {}
+        
+        # Material properties performance
+        if hasattr(self.materials, 'get_cache_statistics'):
+            metrics['materials_cache'] = self.materials.get_cache_statistics()
+        
+        # Basic performance info
+        metrics['field_calculations'] = {
+            'method': self.field_method,
+            'accuracy_level': getattr(self.field_calculator, 'accuracy_level', 'unknown')
+        }
+        
+        # Circuit model info
+        metrics['circuit_model'] = {
+            'coil_inductance': self.circuit_model.coil_inductance_air,
+            'coil_resistance': self.circuit_model.coil_resistance_dc
+        }
+        
+        return metrics
+    
+    def enable_advanced_physics(self, enable_quantum: bool = False, enable_relativistic: bool = False):
+        """Enable advanced physics features for extreme conditions."""
+        warnings_issued = []
+        
+        if enable_quantum:
+            # Check if quantum effects are available
+            if hasattr(self.field_calculator, 'quantum_effects'):
+                print("🔬 Quantum effects module available (but specific corrections interface varies)")
+                warnings_issued.append("Quantum corrections may need manual configuration")
+            else:
+                warnings_issued.append("Quantum effects module not available")
+        
+        if enable_relativistic:
+            # Check if relativistic effects are available
+            if hasattr(self.field_calculator, 'include_relativistic'):
+                self.field_calculator.include_relativistic = True
+                print("⚡ Relativistic corrections enabled")
+            else:
+                warnings_issued.append("Relativistic corrections not available")
+        
+        if warnings_issued:
+            for warning in warnings_issued:
+                warnings.warn(warning)
+    
+    def optimize_for_performance(self, enable_caching: bool = True, cache_size: int = 1000):
+        """Optimize engine for maximum performance."""
+        optimizations_applied = []
+        
+        # Enable field caching if available
+        if hasattr(self.field_calculator, 'cache_enabled'):
+            self.field_calculator.cache_enabled = enable_caching
+            if hasattr(self.field_calculator, 'max_cache_size'):
+                self.field_calculator.max_cache_size = cache_size
+            optimizations_applied.append("field caching")
+        
+        # Set calculation tolerances for speed vs accuracy balance
+        if hasattr(self.field_calculator, 'adaptive_tolerance'):
+            self.field_calculator.adaptive_tolerance = 1e-8  # Balanced tolerance
+            optimizations_applied.append("balanced tolerance")
+        
+        if optimizations_applied:
+            print(f"⚡ Performance optimizations applied: {', '.join(optimizations_applied)}")
+        else:
+            print("⚠️  No performance optimizations available")
+    
+    def validate_physics_consistency(self) -> Dict[str, Any]:
+        """Validate physics consistency across all modules."""
+        validation_results = {}
+        
+        try:
+            # Validate energy conservation
+            test_current = 1000.0
+            test_position = 0.0
+            force, _ = self.magnetic_force_ferromagnetic(test_current, test_position)
+            
+            # Check force calculation consistency
+            B_field = self.magnetic_field_solenoid_on_axis(test_position, test_current)
+            inductance = self.get_inductance(test_position, test_current)
+            
+            # Physical consistency checks
+            validation_results['field_magnitude_reasonable'] = 0.001 < B_field < 50.0  # Tesla
+            validation_results['inductance_positive'] = inductance > 0
+            validation_results['force_finite'] = np.isfinite(force)
+            validation_results['force_magnitude'] = abs(force)
+            validation_results['field_strength'] = B_field
+            validation_results['inductance_value'] = inductance
+            
+        except Exception as e:
+            validation_results['calculation_error'] = str(e)
+            validation_results['calculations_working'] = False
+            return validation_results
+        
+        # Configuration validation
+        config_valid, config_errors = validate_coilgun_config(self.config)
+        validation_results['configuration_valid'] = config_valid
+        validation_results['configuration_errors'] = config_errors
+        validation_results['calculations_working'] = True
+        
+        return validation_results
+    
+    def get_system_status(self) -> Dict[str, Any]:
+        """Get comprehensive system status and health check."""
+        status = {}
+        
+        # Basic system parameters
+        status['coil_parameters'] = {
+            'inner_radius': self.coil_inner_radius,
+            'length': self.coil_length,
+            'total_turns': self.total_turns,
+            'air_core_inductance': self.solenoid_inductance_air_core()
+        }
+        
+        status['projectile_parameters'] = {
+            'mass': self.proj_mass,
+            'diameter': self.proj_diameter,
+            'length': self.proj_length,
+            'material': self.proj_material,
+            'permeability': self.proj_mu_r
+        }
+        
+        status['circuit_parameters'] = {
+            'capacitance': self.capacitance,
+            'initial_voltage': self.initial_voltage,
+            'initial_energy': 0.5 * self.capacitance * self.initial_voltage**2,
+            'coil_resistance': self.circuit_model.coil_resistance_dc
+        }
+        
+        # Physics validation
+        status['physics_validation'] = self.validate_physics_consistency()
+        
+        # Performance metrics
+        status['performance_metrics'] = self.get_performance_metrics()
+        
+        # Component health
+        status['component_health'] = {
+            'materials_initialized': hasattr(self, 'materials') and self.materials is not None,
+            'field_calculator_initialized': hasattr(self, 'field_calculator') and self.field_calculator is not None,
+            'forces_initialized': hasattr(self, 'forces') and self.forces is not None,
+            'circuit_model_initialized': hasattr(self, 'circuit_model') and self.circuit_model is not None
+        }
+        
+        return status
+    
+    # Enhanced field calculation methods
+    def calculate_field_gradient(self, position: float, current: float) -> float:
+        """Calculate magnetic field gradient at given position."""
+        if hasattr(self.field_calculator, 'calculate_field_gradient'):
+            return self.field_calculator.calculate_field_gradient(position, current)
+        else:
+            # Fallback numerical gradient calculation
+            dx = 1e-6
+            B1 = self.magnetic_field_solenoid_on_axis(position - dx, current)
+            B2 = self.magnetic_field_solenoid_on_axis(position + dx, current)
+            return (B2 - B1) / (2 * dx)
+    
+    def calculate_3d_magnetic_field(self, position: np.ndarray, current: float) -> np.ndarray:
+        """Calculate 3D magnetic field at given position."""
+        if hasattr(self.field_calculator, 'magnetic_field_3d_biot_savart'):
+            return self.field_calculator.magnetic_field_3d_biot_savart(position, current)
+        else:
+            # Fallback: assume axial field only
+            if len(position) >= 3:
+                z_position = position[2]
+                B_z = self.magnetic_field_solenoid_on_axis(z_position, current)
+                return np.array([0.0, 0.0, B_z])
+            else:
+                raise ValueError("Position must be a 3D vector [x, y, z]")
+    
+    # Compatibility methods (placeholder implementations for complex features)
+    def _safe_numerical_operation(self, value: float, operation_name: str, max_value: Optional[float] = None) -> float:
+        """Safe numerical operation wrapper."""
+        return NumericalUtils.safe_numerical_operation(value, operation_name, max_value)
+    
+    def create_stepwise_callback(self):
+        """Create callback for stepwise integration monitoring."""
+        # Simplified implementation - full implementation would be in solve.py
+        return lambda t, y: None
+    
     # Advanced analysis methods
     def analyze_force_components(self, current: float, position: float, velocity: float = 0.0,
                                current_history: Optional[List] = None,
@@ -396,13 +606,3 @@ class CoilgunPhysicsEngine(BasePhysicsModel):
         return self.energy_analyzer.calculate_energy_balance(
             current, voltage, kinetic_energy, cumulative_losses
         )
-    
-    # Compatibility methods (placeholder implementations for complex features)
-    def _safe_numerical_operation(self, value: float, operation_name: str, max_value: Optional[float] = None) -> float:
-        """Safe numerical operation wrapper."""
-        return NumericalUtils.safe_numerical_operation(value, operation_name, max_value)
-    
-    def create_stepwise_callback(self):
-        """Create callback for stepwise integration monitoring."""
-        # Simplified implementation - full implementation would be in solve.py
-        return lambda t, y: None 

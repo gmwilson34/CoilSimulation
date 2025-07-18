@@ -375,7 +375,8 @@ class EnhancedMultiStageSimulation(BaseSolver):
         projectile_state['velocity'] = exit_velocity * self.velocity_transfer_efficiency
         
         # Update position
-        projectile_state['position'] += exit_velocity * stage_results.get('time', 0)
+        duration = stage_results['time'][-1] if 'time' in stage_results and len(stage_results['time']) > 0 else 0.0
+        projectile_state['position'] += exit_velocity * duration
         
         # Update total energy
         projectile_state['total_energy'] += stage_results.get('energy_analysis', {}).get('final_kinetic_energy', 0)
@@ -634,7 +635,7 @@ class EnhancedMultiStageSimulation(BaseSolver):
             if hasattr(physics_engine, 'permeability_model'):
                 perm_model = physics_engine.permeability_model
                 if hasattr(perm_model, 'print_cache_statistics'):
-                    perm_model.print_cache_statistics()
+                    pass  # Cache statistics printing disabled
         
         print("="*60)
     

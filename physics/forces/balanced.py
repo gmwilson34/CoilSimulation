@@ -63,9 +63,8 @@ class ElectromagneticForcesBalanced(BaseElectromagneticForces):
         # Total magnetic force
         total_force = force_gradient + force_reluctance + force_lorentz + force_eddy
         
-        # FIXED: Apply energy conservation limit only for large forces
-        if abs(total_force) > 100.0:  # Only limit very large forces
-            total_force = self._apply_energy_conservation_limit(total_force, current, position)
+        # FIXED: Apply energy conservation limit consistently for all forces
+        total_force = self._apply_energy_conservation_limit(total_force, current, position)
         
         # Apply safety limits
         total_force = self.apply_safety_limits(total_force)
@@ -92,29 +91,34 @@ class ElectromagneticForcesBalanced(BaseElectromagneticForces):
         return self._calculate_inductance_gradient_balanced(current, position, delta)
     
     def _calculate_inductance_with_projectile_balanced(self, current: float, position: float) -> float:
-        """BALANCED coil inductance calculation with moderate enhancement."""
+        """BALANCED coil inductance calculation with physics-based field decay."""
         # Base air-core inductance
         L_air = self._solenoid_inductance_air_core()
         
-        # FIXED: Extend force calculation range beyond just coil length
+        # Calculate field-based influence using proper Biot-Savart decay
         coil_start = -self.field_calc.coil_length / 2
         coil_end = self.field_calc.coil_length / 2
-        influence_range = self.field_calc.coil_length * 0.5  # Extend range by 50%
         
-        if position > coil_start - influence_range and position < coil_end + influence_range:
-            # Projectile is within influence range
+        # Get magnetic field at position for field-based influence
+        B_field = self.field_calc.magnetic_field_solenoid_on_axis(position, current)
+        B_center = self.field_calc.magnetic_field_solenoid_on_axis(0.0, current)
+        
+        # Calculate field-based influence factor (avoids arbitrary cutoffs)
+        if B_center > 0:
+            field_influence = min(1.0, abs(B_field) / abs(B_center))
+        else:
+            field_influence = 0.0
+        
+        # Only calculate enhancement if there's significant field influence
+        if field_influence > 1e-4:  # Threshold based on field strength, not arbitrary distance
+            # Calculate overlap fraction for positions within coil
             overlap_fraction = self._calculate_overlap_fraction(position)
             
-            # For positions outside coil, use distance-based influence
-            if position < coil_start:
-                distance_factor = max(0.1, 1.0 - (coil_start - position) / influence_range)
-                overlap_fraction = max(overlap_fraction, 0.1 * distance_factor)
-            elif position > coil_end:
-                distance_factor = max(0.1, 1.0 - (position - coil_end) / influence_range)
-                overlap_fraction = max(overlap_fraction, 0.1 * distance_factor)
+            # For positions outside coil, use field-based influence (follows ~1/z³ dipole decay)
+            if position < coil_start or position > coil_end:
+                overlap_fraction = max(overlap_fraction, 0.1 * field_influence)
             
             # BALANCED: Use moderate permeability with realistic saturation
-            B_field = self.field_calc.magnetic_field_solenoid_on_axis(position, current)
             H_applied = B_field / PhysicsConstants.MU_0 if B_field != 0 else 0
             
             # Get effective permeability with balanced limits
@@ -169,7 +173,7 @@ class ElectromagneticForcesBalanced(BaseElectromagneticForces):
         return NumericalUtils.safe_numerical_operation(dL_dz, "inductance_gradient_balanced")
     
     def _apply_energy_conservation_limit(self, force: float, current: float, position: float) -> float:
-        """Apply balanced energy conservation constraints - less aggressive."""
+        """Apply consistent energy conservation constraints for all force magnitudes."""
         # Calculate characteristic work that could be done by this force
         characteristic_distance = 0.05  # 5cm realistic acceleration distance
         work_estimate = abs(force) * characteristic_distance
@@ -178,7 +182,7 @@ class ElectromagneticForcesBalanced(BaseElectromagneticForces):
         max_allowed_work = self.initial_energy * self.max_work_fraction
         
         # Apply scaling if work estimate exceeds limit
-        if work_estimate > max_allowed_work:
+        if work_estimate > max_allowed_work and max_allowed_work > 0:
             scaling_factor = max_allowed_work / work_estimate
             force *= scaling_factor
             
@@ -189,7 +193,7 @@ class ElectromagneticForcesBalanced(BaseElectromagneticForces):
         return force
     
     def _calculate_gradient_force(self, current: float, position: float) -> float:
-        """FIXED gradient force calculation with better boundary handling."""
+        """FIXED gradient force calculation with material-dependent limits."""
         # Get magnetic field and gradient at projectile position
         B_field = self.field_calc.magnetic_field_solenoid_on_axis(position, current)
         dB_dz = self.field_calc.calculate_field_gradient(position, current)
@@ -216,47 +220,72 @@ class ElectromagneticForcesBalanced(BaseElectromagneticForces):
         # Gradient force: F = μ₀ * m * dB/dz
         force = PhysicsConstants.MU_0 * magnetic_moment * dB_dz
         
-        # FIXED: Apply reasonable bounds to prevent numerical spikes
-        max_gradient_force = 1000.0  # 1000N maximum gradient force
+        # FIXED: Apply material-dependent force limits based on saturation
+        B_sat = self.materials.get_material_property(self.proj_material, 'saturation_field', 2.0)  # Tesla
+        max_moment = (self.max_effective_permeability - 1.0) * self.proj_volume * (B_sat / PhysicsConstants.MU_0)
+        max_gradient_force = PhysicsConstants.MU_0 * max_moment * abs(dB_dz) if dB_dz != 0 else 5000.0
+        
+        # Additional safety limit for very large gradients
+        max_gradient_force = min(max_gradient_force, 5000.0)  # 5kN engineering limit
+        
         force = NumericalUtils.clamp(force, -max_gradient_force, max_gradient_force)
         
         return NumericalUtils.safe_numerical_operation(force, "gradient_force_balanced")
     
     def _calculate_lorentz_force(self, current: float, position: float, velocity: float) -> float:
-        """Calculate Lorentz force with balanced parameters."""
+        """Calculate Lorentz force with geometry-derived scaling."""
         if abs(velocity) < 1e-6:
             return 0.0
         
-        # Simplified Lorentz force calculation for balanced approach
+        # Calculate effective current density from coil geometry
         B_field = self.field_calc.magnetic_field_solenoid_on_axis(position, current)
+        
+        # Effective interaction length (minimum of projectile and coil overlap)
         L_eff = min(self.proj_length, self.field_calc.coil_length)
         
-        # Current density and conductivity effects
-        J = current / (np.pi * self.field_calc.coil_radius**2)  # Current density
+        # Current density in coil (geometry-derived, not arbitrary)
+        coil_cross_section = np.pi * self.field_calc.coil_radius**2
+        J_coil = current / coil_cross_section  # A/m²
+        
+        # Projectile conductivity
         sigma = 1.0 / self.materials.get_material_property(self.proj_material, 'resistivity_20C')
         
-        # Balanced Lorentz force
-        force = -sigma * J * B_field * velocity * self.proj_volume * 0.01  # Scaling factor
+        # Effective interaction volume (overlap region)
+        overlap_fraction = self._calculate_overlap_fraction(position)
+        interaction_volume = self.proj_volume * overlap_fraction
+        
+        # Lorentz force: F = σ * v × B * J * V_interaction
+        # Simplified for 1D motion: F = -σ * v * B * J * V
+        force = -sigma * velocity * B_field * J_coil * interaction_volume
         
         return NumericalUtils.safe_numerical_operation(force, "lorentz_force_balanced")
     
     def _calculate_eddy_current_force(self, current: float, position: float, velocity: float,
                                     current_history: Optional[List] = None,
                                     time_history: Optional[List] = None) -> Tuple[float, float]:
-        """Calculate eddy current force and power dissipation with balanced approach."""
+        """Calculate eddy current force with geometry-derived scaling."""
         if abs(velocity) < 1e-6:
             return 0.0, 0.0
         
-        # Simplified eddy current model for balanced approach
+        # Get magnetic field at projectile position
         B_field = self.field_calc.magnetic_field_solenoid_on_axis(position, current)
         
-        # Eddy current force opposes motion (Lenz's law)
+        # Projectile material properties
         sigma = 1.0 / self.materials.get_material_property(self.proj_material, 'resistivity_20C')
         
-        # Balanced eddy current force
-        eddy_force = -np.sign(velocity) * sigma * B_field**2 * self.proj_volume * abs(velocity) * 0.001
+        # Geometry-based eddy current calculation
+        # Characteristic eddy current path length (related to projectile radius)
+        proj_radius = (3 * self.proj_volume / (4 * np.pi))**(1/3)  # Equivalent sphere radius
+        char_length = np.pi * proj_radius  # Circumferential path
         
-        # Power dissipation
+        # Effective interaction volume for eddy currents
+        overlap_fraction = self._calculate_overlap_fraction(position)
+        eddy_volume = self.proj_volume * overlap_fraction
+        
+        # Eddy current force: F = -σ * B² * v * V_eff / L_char (opposes motion via Lenz's law)
+        eddy_force = -np.sign(velocity) * sigma * B_field**2 * abs(velocity) * eddy_volume / char_length
+        
+        # Power dissipation: P = |F * v| (always positive)
         eddy_power = abs(eddy_force * velocity)
         
         return (NumericalUtils.safe_numerical_operation(eddy_force, "eddy_force_balanced"),

@@ -153,7 +153,7 @@ class BaseElectromagneticForces(BasePhysicsModel):
         
         # Force on induced current: F = I_induced * L_eff * B
         # Opposes motion (Lenz's law)
-        effective_length = min(self.proj_length, abs(velocity) * 1e-3)  # Penetration depth estimate
+        effective_length = self.proj_length
         force = -induced_current * effective_length * B_field
         
         return NumericalUtils.safe_numerical_operation(force, "motional_emf_force")
@@ -196,6 +196,7 @@ class BaseElectromagneticForces(BasePhysicsModel):
     
     def _calculate_inductance_gradient(self, current: float, position: float, delta: float = 1e-4) -> float:
         """Calculate inductance gradient dL/dz using finite differences."""
+        delta = 1e-6 * self.field_calc.coil_length
         L_plus = self._calculate_inductance_with_projectile(current, position + delta)
         L_minus = self._calculate_inductance_with_projectile(current, position - delta)
         
@@ -205,20 +206,18 @@ class BaseElectromagneticForces(BasePhysicsModel):
     
     def _solenoid_inductance_air_core(self) -> float:
         """
-        Calculate air-core solenoid inductance using CORRECTED Wheeler's formula.
+        Calculate air-core solenoid inductance using Nagaoka correction.
+        L = μ₀ N² π r² / l * k, with k approximation.
         """
-        # Coil parameters
         N = self.field_calc.num_turns
         l = self.field_calc.coil_length
-        a = self.field_calc.coil_radius  # Radius
-        
-        # CORRECTED Wheeler's formula for single-layer solenoid (SI units)
-        # L = μ₀N²a / (9 + 10(l/a)) - this is the correct SI formulation
-        # Original imperial formula was L = N²a²/(9a + 10l) but with different units
-        aspect_ratio = l / a
-        L_wheeler = (PhysicsConstants.MU_0 * N**2 * a) / (9 + 10 * aspect_ratio)
-        
-        return L_wheeler
+        r = self.field_calc.coil_radius
+        if l <= 0:
+            return 0.0
+        alpha = (2 * r) / l  # d/l
+        k = 1 / (1 + 0.45 * alpha + 0.005 * alpha**2)
+        L_infinite = PhysicsConstants.MU_0 * N**2 * np.pi * r**2 / l
+        return k * L_infinite
     
     def _calculate_overlap_fraction(self, position: float) -> float:
         """Calculate fraction of projectile overlapping with coil."""
@@ -246,7 +245,7 @@ class BaseElectromagneticForces(BasePhysicsModel):
                                    tolerance: float = 0.1) -> bool:
         """Basic energy conservation validation."""
         # Calculate work that could be done by this force
-        characteristic_distance = 0.1  # 10cm typical projectile travel
+        characteristic_distance = self.field_calc.coil_length  # Dynamic based on coil size
         work_estimate = abs(force) * characteristic_distance
         
         # Check against initial energy
@@ -270,7 +269,8 @@ class BaseElectromagneticForces(BasePhysicsModel):
             Tuple of (total_force, eddy_power_loss)
         """
         # Calculate individual force components
-        force_gradient = self.calculate_gradient_force(current, position)
+        # force_gradient = self.calculate_gradient_force(current, position)  # Commented to avoid double counting with reluctance
+        force_gradient = 0.0
         force_reluctance = self.calculate_reluctance_force(current, position)
         force_motional = self.calculate_motional_emf_force(current, position, velocity)
         
